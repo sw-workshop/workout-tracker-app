@@ -27,3 +27,7 @@ VITE_BASE_PATH=/workout-tracker-app/ npm run build
 Workout records are stored in browser localStorage.
 
 Data is tied to the browser and origin. It is not synced across devices, and it may be lost if site data is deleted.
+
+## Third Party Notices
+
+Runtime dependency license notices are listed in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
