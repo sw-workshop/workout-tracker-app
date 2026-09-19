@@ -6,6 +6,8 @@ export type FormSet = {
   id: string;
   weightKg: string;
   reps: string;
+  leftWeightKg: string;
+  leftReps: string;
 };
 
 export type RecordForm = {
@@ -13,6 +15,7 @@ export type RecordForm = {
   exerciseName: string;
   topSuccessWeightKg: string;
   topFailedWeightKg: string;
+  isUnilateral: boolean;
   sets: FormSet[];
   note: string;
 };
@@ -32,6 +35,8 @@ export function createDefaultSets(): FormSet[] {
     id: `set-${index + 1}`,
     weightKg: "",
     reps: "",
+    leftWeightKg: "",
+    leftReps: "",
   }));
 }
 
@@ -41,22 +46,37 @@ export function createForm(date: string): RecordForm {
     exerciseName: "",
     topSuccessWeightKg: "",
     topFailedWeightKg: "",
+    isUnilateral: false,
     sets: createDefaultSets(),
     note: "",
   };
 }
 
 export function createFormFromWorkoutRecord(record: WorkoutRecord): RecordForm {
-  const recordSets = record.sets.map((set) => ({
-    id: `set-${set.setNumber}`,
-    weightKg: String(set.weightKg),
-    reps: String(set.reps),
-  }));
+  const recordSets = record.sets.map((set) =>
+    "right" in set
+      ? {
+          id: `set-${set.setNumber}`,
+          weightKg: String(set.right.weightKg),
+          reps: String(set.right.reps),
+          leftWeightKg: String(set.left.weightKg),
+          leftReps: String(set.left.reps),
+        }
+      : {
+          id: `set-${set.setNumber}`,
+          weightKg: String(set.weightKg),
+          reps: String(set.reps),
+          leftWeightKg: "",
+          leftReps: "",
+        },
+  );
   const emptySetCount = Math.max(0, 3 - recordSets.length);
   const emptySets = Array.from({ length: emptySetCount }, (_, index) => ({
     id: `set-${recordSets.length + index + 1}`,
     weightKg: "",
     reps: "",
+    leftWeightKg: "",
+    leftReps: "",
   }));
 
   return {
@@ -64,14 +84,19 @@ export function createFormFromWorkoutRecord(record: WorkoutRecord): RecordForm {
     exerciseName: record.exerciseName,
     topSuccessWeightKg: formatOptionalWeight(record.topSet.successWeightKg),
     topFailedWeightKg: formatOptionalWeight(record.topSet.failedWeightKg),
+    isUnilateral: record.isUnilateral === true,
     sets: [...recordSets, ...emptySets],
     note: record.note,
   };
 }
 
-export function findInvalidRepsSetNumbers(sets: FormSet[]): number[] {
+export function findInvalidRepsSetNumbers(
+  sets: FormSet[],
+  isUnilateral = false,
+): number[] {
   return sets.flatMap((set, index) => {
-    if (set.reps.trim() === "" || isValidRepsValue(set.reps)) {
+    const values = isUnilateral ? [set.reps, set.leftReps] : [set.reps];
+    if (values.every((value) => value.trim() === "" || isValidRepsValue(value))) {
       return [];
     }
 
@@ -95,8 +120,13 @@ export function findInvalidWeightLabels(form: RecordForm): string[] {
   }
 
   let previousWeightKg = "";
+  let previousLeftWeightKg = "";
   form.sets.forEach((set, index) => {
-    const hasAnySetInput = set.weightKg.trim() !== "" || set.reps.trim() !== "";
+    const hasAnySetInput =
+      set.weightKg.trim() !== "" ||
+      set.reps.trim() !== "" ||
+      (form.isUnilateral &&
+        (set.leftWeightKg.trim() !== "" || set.leftReps.trim() !== ""));
     const effectiveWeightKg = set.weightKg.trim() || previousWeightKg;
 
     if (set.weightKg.trim() !== "" && isValidWeightValue(set.weightKg)) {
@@ -106,13 +136,29 @@ export function findInvalidWeightLabels(form: RecordForm): string[] {
     if (hasAnySetInput && !isValidWeightValue(effectiveWeightKg)) {
       invalidWeightLabels.push(`${index + 1}セット目の重量`);
     }
+
+    if (form.isUnilateral) {
+      const effectiveLeftWeightKg = set.leftWeightKg.trim() || previousLeftWeightKg;
+      if (set.leftWeightKg.trim() !== "" && isValidWeightValue(set.leftWeightKg)) {
+        previousLeftWeightKg = set.leftWeightKg.trim();
+      }
+      if (hasAnySetInput && !isValidWeightValue(effectiveLeftWeightKg)) {
+        invalidWeightLabels.push(`${index + 1}セット目（左）の重量`);
+      }
+    }
   });
 
   return invalidWeightLabels;
 }
 
-export function countTotalReps(sets: FormSet[]): number {
-  return sets.reduce((total, set) => total + parseRepsValue(set.reps), 0);
+export function countTotalReps(sets: FormSet[], isUnilateral = false): number {
+  return sets.reduce(
+    (total, set) =>
+      total +
+      parseRepsValue(set.reps) +
+      (isUnilateral ? parseRepsValue(set.leftReps) : 0),
+    0,
+  );
 }
 
 export function buildWorkoutRecordFromForm(
@@ -136,7 +182,7 @@ export function buildWorkoutRecordFromForm(
     };
   }
 
-  const invalidSetNumbers = findInvalidRepsSetNumbers(form.sets);
+  const invalidSetNumbers = findInvalidRepsSetNumbers(form.sets, form.isUnilateral);
   if (invalidSetNumbers.length > 0) {
     return {
       ok: false,
@@ -144,7 +190,7 @@ export function buildWorkoutRecordFromForm(
     };
   }
 
-  const parsedSets = buildWorkoutSets(form.sets);
+  const parsedSets = buildWorkoutSets(form);
   if (!parsedSets.ok) {
     return parsedSets;
   }
@@ -157,6 +203,7 @@ export function buildWorkoutRecordFromForm(
       date: form.date,
       exerciseName: form.exerciseName.trim(),
       exerciseType: "weighted",
+      ...(form.isUnilateral ? { isUnilateral: true } : {}),
       topSet: {
         successWeightKg: parseOptionalWeightValue(form.topSuccessWeightKg),
         failedWeightKg: parseOptionalWeightValue(form.topFailedWeightKg),
@@ -170,18 +217,27 @@ export function buildWorkoutRecordFromForm(
 }
 
 function buildWorkoutSets(
-  formSets: FormSet[],
+  form: RecordForm,
 ): { ok: true; sets: WorkoutSet[] } | { ok: false; error: string } {
   let previousWeightKg: number | null = null;
+  let previousLeftWeightKg: number | null = null;
   const sets: WorkoutSet[] = [];
 
-  for (const [index, set] of formSets.entries()) {
+  for (const [index, set] of form.sets.entries()) {
     const weightText = set.weightKg.trim();
     const repsText = set.reps.trim();
     const hasWeight = weightText !== "";
     const hasReps = repsText !== "";
+    const leftWeightText = set.leftWeightKg.trim();
+    const leftRepsText = set.leftReps.trim();
+    const hasLeftWeight = leftWeightText !== "";
+    const hasLeftReps = leftRepsText !== "";
 
-    if (!hasWeight && !hasReps) {
+    if (
+      !hasWeight &&
+      !hasReps &&
+      (!form.isUnilateral || (!hasLeftWeight && !hasLeftReps))
+    ) {
       continue;
     }
 
@@ -201,6 +257,31 @@ function buildWorkoutSets(
 
     if (hasWeight) {
       previousWeightKg = Number.parseFloat(weightText);
+    }
+
+    if (form.isUnilateral) {
+      if (!hasLeftReps) {
+        return {
+          ok: false,
+          error: `${index + 1}セット目（左）のrepsを入力してください。`,
+        };
+      }
+      if (!hasLeftWeight && previousLeftWeightKg === null) {
+        return {
+          ok: false,
+          error: `${index + 1}セット目（左）の重量を入力してください。`,
+        };
+      }
+      if (hasLeftWeight) previousLeftWeightKg = Number.parseFloat(leftWeightText);
+      sets.push({
+        setNumber: sets.length + 1,
+        right: { weightKg: previousWeightKg ?? 0, reps: Number.parseInt(repsText, 10) },
+        left: {
+          weightKg: previousLeftWeightKg ?? 0,
+          reps: Number.parseInt(leftRepsText, 10),
+        },
+      });
+      continue;
     }
 
     sets.push({

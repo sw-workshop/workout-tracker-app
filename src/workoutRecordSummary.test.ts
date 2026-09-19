@@ -66,6 +66,21 @@ describe("summarizeWorkoutRecord", () => {
 
     expect(summarizeWorkoutRecord(record)).toBe("45kg x 8 reps");
   });
+
+  it("summarizes both sides of unilateral sets", () => {
+    const record = createRecord({
+      isUnilateral: true,
+      sets: [
+        {
+          setNumber: 1,
+          right: { weightKg: 10, reps: 10 },
+          left: { weightKg: 10, reps: 9 },
+        },
+      ],
+    });
+
+    expect(summarizeWorkoutRecord(record)).toBe("1: 右 10kg x 10, 左 10kg x 9 reps");
+  });
 });
 
 describe("record detail formatters", () => {
@@ -94,5 +109,20 @@ describe("record detail formatters", () => {
     });
 
     expect(countWorkoutRecordTotalReps(record)).toBe(21);
+  });
+
+  it("counts reps from both sides of unilateral sets", () => {
+    const record = createRecord({
+      isUnilateral: true,
+      sets: [
+        {
+          setNumber: 1,
+          right: { weightKg: 10, reps: 10 },
+          left: { weightKg: 10, reps: 9 },
+        },
+      ],
+    });
+
+    expect(countWorkoutRecordTotalReps(record)).toBe(19);
   });
 });
