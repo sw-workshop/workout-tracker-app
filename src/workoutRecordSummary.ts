@@ -14,7 +14,10 @@ export function formatReps(reps: number): string {
 }
 
 export function countWorkoutRecordTotalReps(record: WorkoutRecord): number {
-  return record.sets.reduce((total, set) => total + set.reps, 0);
+  return record.sets.reduce(
+    (total, set) => total + ("right" in set ? set.right.reps + set.left.reps : set.reps),
+    0,
+  );
 }
 
 export function summarizeWorkoutRecord(record: WorkoutRecord): string {
@@ -26,8 +29,20 @@ export function summarizeWorkoutRecord(record: WorkoutRecord): string {
     topParts.push(`(${record.topSet.failedWeightKg}kg失敗)`);
   }
 
+  if (record.isUnilateral) {
+    const setSummary = record.sets
+      .map((set) =>
+        "right" in set
+          ? `${set.setNumber}: 右 ${set.right.weightKg}kg x ${set.right.reps}, 左 ${set.left.weightKg}kg x ${set.left.reps} reps`
+          : `${set.weightKg}kg x ${set.reps} reps`,
+      )
+      .join(", ");
+    return [...topParts, setSummary].filter(Boolean).join(" / ");
+  }
+
   const setsByWeight = record.sets.reduce<{ weightKg: number; reps: number[] }[]>(
     (groups, set) => {
+      if ("right" in set) return groups;
       const lastGroup = groups.at(-1);
       if (lastGroup?.weightKg === set.weightKg) {
         lastGroup.reps.push(set.reps);

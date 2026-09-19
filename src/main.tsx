@@ -11,7 +11,9 @@ if (rootElement === null) {
   throw new Error("Root element was not found.");
 }
 
-createRoot(rootElement).render(
+const root = createRoot(rootElement);
+
+root.render(
   <StrictMode>
     <App />
   </StrictMode>,

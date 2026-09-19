@@ -7,17 +7,31 @@ export type TopSet = {
   failedWeightKg: number | null;
 };
 
-export type WorkoutSet = {
+export type StandardWorkoutSet = {
   setNumber: number;
   weightKg: number;
   reps: number;
 };
+
+export type UnilateralSetSide = {
+  weightKg: number;
+  reps: number;
+};
+
+export type UnilateralWorkoutSet = {
+  setNumber: number;
+  right: UnilateralSetSide;
+  left: UnilateralSetSide;
+};
+
+export type WorkoutSet = StandardWorkoutSet | UnilateralWorkoutSet;
 
 export type WorkoutRecord = {
   id: RecordId;
   date: string;
   exerciseName: string;
   exerciseType: ExerciseType;
+  isUnilateral?: boolean;
   topSet: TopSet;
   sets: WorkoutSet[];
   note: string;
