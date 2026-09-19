@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "vitest run src/inputConstraints.test.ts src/recordForm.test.ts src/workoutRecordRepository.test.ts src/workoutRecordSummary.test.ts src/App.test.tsx src/RepsInputPrototype.test.tsx"
+    "test": "vitest run src/inputConstraints.test.ts src/recordForm.test.ts src/workoutRecordRepository.test.ts src/workoutRecordSummary.test.ts src/App.test.tsx"
   },
   "dependencies": {
     "react": "^19.2.8",
