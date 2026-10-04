@@ -29,7 +29,10 @@ export function buildMonthCalendar(month: Date): Date[] {
   const startDate = new Date(firstDate);
   startDate.setDate(firstDate.getDate() - startOffset);
 
-  return Array.from({ length: 42 }, (_, index) => {
+  const daysInMonth = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate();
+  const cellCount = Math.ceil((startOffset + daysInMonth) / 7) * 7;
+
+  return Array.from({ length: cellCount }, (_, index) => {
     const date = new Date(startDate);
     date.setDate(startDate.getDate() + index);
     return date;

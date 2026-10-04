@@ -19,7 +19,12 @@ import type { WorkoutRecord } from "./types";
 
 import { App } from "./App";
 import { WorkoutSheet } from "./WorkoutSheet";
-import { formatDateLabel, formatMonthTitle, formatStorageDate } from "./dateUtils";
+import {
+  buildMonthCalendar,
+  formatDateLabel,
+  formatMonthTitle,
+  formatStorageDate,
+} from "./dateUtils";
 
 function todayKey(): string {
   return formatStorageDate(new Date());
@@ -75,6 +80,12 @@ function calendarPanel(): HTMLElement {
   return screen.getByRole("region", { name: /のカレンダー/ });
 }
 
+function activeMonth(): HTMLElement {
+  return calendarPanel().querySelector<HTMLElement>(
+    '.month-grid:not([aria-hidden="true"])',
+  )!;
+}
+
 function swipeCalendar({
   from = [200, 100],
   to,
@@ -122,7 +133,7 @@ function swipeCalendar({
 }
 
 function saveButton(): HTMLElement {
-  return screen.getByRole("button", { name: "保存" });
+  return within(saveAction()).getByRole("button", { name: "保存" });
 }
 
 function saveAction(): HTMLElement {
@@ -134,6 +145,103 @@ function recordAction(): HTMLElement {
 }
 
 describe("App", () => {
+  it.each([
+    [2021, 1, 28],
+    [2026, 8, 35],
+    [2026, 2, 42],
+  ])("uses only necessary calendar weeks for %i/%i", (year, month, count) => {
+    const dates = buildMonthCalendar(new Date(year, month, 1));
+    expect(dates).toHaveLength(count);
+    expect(dates[0].getDay()).toBe(1);
+    expect(dates.at(-1)!.getDay()).toBe(0);
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    expect(dates.filter((date) => date.getMonth() === month)).toHaveLength(daysInMonth);
+    expect(dates.slice(0, 7).some((date) => date.getMonth() === month)).toBe(true);
+    expect(dates.slice(-7).some((date) => date.getMonth() === month)).toBe(true);
+  });
+
+  it.each([0, 1, 2, 3, 5, 6, 8])(
+    "shows the remaining count for %i records without hiding list records",
+    async (count) => {
+      saveRecords(
+        Array.from({ length: count }, (_, index) =>
+          createRecord({
+            id: `record_count_${index}`,
+            exerciseName: `種目${index + 1}`,
+          }),
+        ),
+      );
+      render(<App />);
+      if (count > 0) await within(selectedDayPanel()).findByText("種目1");
+      const calendar = activeMonth();
+      expect(calendarPanel().style.getPropertyValue("--calendar-weeks")).toBe("");
+      expect(calendar.querySelectorAll(".record-chip")).toHaveLength(Math.min(count, 5));
+      if (count > 5) {
+        expect(within(calendar).getByText(`ほか${count - 5}件`)).toBeInTheDocument();
+      } else {
+        expect(calendar.querySelector(".record-overflow-count")).toBeNull();
+      }
+      expect(selectedDayPanel().querySelectorAll(".record-summary")).toHaveLength(count);
+      expect(calendar.style.gridTemplateRows).toBe(
+        `repeat(${buildMonthCalendar(new Date()).length / 7}, minmax(0, 1fr))`,
+      );
+    },
+  );
+
+  it("distinguishes mixed exercise types without a calendar side label", async () => {
+    saveRecords([
+      createRecord({ id: "record_standard", exerciseName: "ベンチプレス" }),
+      createRecord({
+        id: "record_unilateral",
+        exerciseName: "片足レッグプレス",
+        isUnilateral: true,
+        sets: [
+          {
+            setNumber: 1,
+            right: { weightKg: 70, reps: 10 },
+            left: { weightKg: 70, reps: 10 },
+          },
+        ],
+      }),
+    ]);
+    render(<App />);
+    const standard = await within(activeMonth()).findByText("ベンチプレス");
+    const unilateral = within(activeMonth()).getByText("片足レッグプレス");
+    expect(standard).not.toHaveClass("is-unilateral");
+    expect(unilateral).toHaveClass("is-unilateral");
+    expect(within(activeMonth()).queryByText("左右")).not.toBeInTheDocument();
+    const list = selectedDayPanel();
+    expect(within(list).getByRole("button", { name: /片足レッグプレス/ })).toHaveClass(
+      "is-unilateral",
+    );
+    expect(within(list).getByRole("button", { name: /ベンチプレス/ })).not.toHaveClass(
+      "is-unilateral",
+    );
+    expect(within(list).getByText("左右")).toBeInTheDocument();
+  });
+
+  it("focuses the first invalid field when saving from the header", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: /新しい記録を作成/ }));
+    expect(screen.getAllByRole("button", { name: "保存" })).toHaveLength(2);
+    await user.click(screen.getAllByRole("button", { name: "保存" })[0]);
+    expect(screen.getByLabelText("種目名")).toHaveFocus();
+    expect(loadRecords()).toEqual([]);
+  });
+
+  it("saves a record from the header using the same validation", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: /新しい記録を作成/ }));
+    await user.type(screen.getByLabelText("種目名"), "ベンチプレス");
+    await user.type(screen.getAllByLabelText("重量")[0], "60");
+    await user.type(screen.getAllByLabelText("reps")[0], "8");
+    await user.click(screen.getAllByRole("button", { name: "保存" })[0]);
+    expect(loadRecords()).toHaveLength(1);
+    expect(loadRecords()[0].sets).toEqual([{ setNumber: 1, weightKg: 60, reps: 8 }]);
+  });
+
   it("opens and closes the sheet only after selecting a day or Today", async () => {
     const user = userEvent.setup();
     renderReact(<App />);
@@ -343,7 +451,7 @@ describe("App", () => {
 
     render(<App />);
 
-    expect(await within(calendarPanel()).findByText("ベンチプレス")).toBeInTheDocument();
+    expect(await within(activeMonth()).findByText("ベンチプレス")).toBeInTheDocument();
   });
 
   it("restores the selected day and visible month after remounting", async () => {
@@ -448,7 +556,7 @@ describe("App", () => {
     await user.click(saveButton());
 
     expect(
-      await within(calendarPanel()).findByText("ラットプルダウン"),
+      await within(activeMonth()).findByText("ラットプルダウン"),
     ).toBeInTheDocument();
     expect(
       within(selectedDayPanel()).getByRole("button", { name: /ラットプルダウン/ }),
@@ -969,7 +1077,7 @@ describe("App", () => {
       screen.getByRole("heading", { name: formatDateLabel(editedDate) }),
     ).toBeInTheDocument();
     expect(
-      await within(calendarPanel()).findByText("フロントスクワット"),
+      await within(activeMonth()).findByText("フロントスクワット"),
     ).toBeInTheDocument();
     expect(
       within(selectedDayPanel()).getByRole("button", { name: /フロントスクワット/ }),

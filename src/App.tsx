@@ -236,6 +236,45 @@ function areRecordFormsEqual(left: RecordForm, right: RecordForm): boolean {
 }
 
 export function App() {
+  const formElement = useRef<HTMLFormElement>(null);
+  const saving = useRef(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [errorFocusRevision, setErrorFocusRevision] = useState(0);
+
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    const updateViewport = () => {
+      document.documentElement.style.setProperty(
+        "--app-height",
+        `${viewport?.height ?? window.innerHeight}px`,
+      );
+      document.documentElement.style.setProperty(
+        "--app-top",
+        `${viewport?.offsetTop ?? 0}px`,
+      );
+    };
+    updateViewport();
+    viewport?.addEventListener("resize", updateViewport);
+    viewport?.addEventListener("scroll", updateViewport);
+    window.addEventListener("resize", updateViewport);
+    return () => {
+      viewport?.removeEventListener("resize", updateViewport);
+      viewport?.removeEventListener("scroll", updateViewport);
+      window.removeEventListener("resize", updateViewport);
+      document.documentElement.style.removeProperty("--app-height");
+      document.documentElement.style.removeProperty("--app-top");
+    };
+  }, []);
+
+  useEffect(() => {
+    if (errorFocusRevision === 0) return;
+    const target =
+      formElement.current?.querySelector<HTMLElement>(
+        'input[aria-invalid="true"], textarea[aria-invalid="true"]',
+      ) ?? formElement.current?.querySelector<HTMLElement>(".field-error, .form-error");
+    target?.scrollIntoView?.({ block: "center", behavior: "auto" });
+    target?.focus({ preventScroll: true });
+  }, [errorFocusRevision]);
   const today = useMemo(() => new Date(), []);
   const [restoredView] = useState(readViewState);
   const [recordsLoaded, setRecordsLoaded] = useState(false);
@@ -506,13 +545,17 @@ export function App() {
   }
 
   async function saveRecord() {
+    if (saving.current) return;
     const nextValidationErrors = buildFormValidationErrors(form, true);
     setHasSubmittedForm(true);
     if (hasFormValidationErrors(nextValidationErrors)) {
       setFormError("");
+      setErrorFocusRevision((value) => value + 1);
       return;
     }
 
+    saving.current = true;
+    setIsSaving(true);
     try {
       const baseRecord = viewMode === "edit-record" ? selectedRecord : null;
       const result = buildWorkoutRecordFromForm(
@@ -522,6 +565,7 @@ export function App() {
       );
       if (!result.ok) {
         setFormError(result.error);
+        setErrorFocusRevision((value) => value + 1);
         return;
       }
 
@@ -546,6 +590,10 @@ export function App() {
       setFormError(
         "保存中にエラーが発生しました。画面を再読み込みしてもう一度お試しください。",
       );
+      setErrorFocusRevision((value) => value + 1);
+    } finally {
+      saving.current = false;
+      setIsSaving(false);
     }
   }
 
@@ -690,10 +738,21 @@ export function App() {
               <p className="screen-label">Workout Tracker</p>
               <h1>{isEditing ? "記録を編集" : "新しい記録"}</h1>
             </div>
-            <span aria-hidden="true" />
+            <button
+              className="top-save-button button-primary"
+              type="button"
+              disabled={isSaving}
+              onClick={() => void saveRecord()}
+            >
+              保存
+            </button>
           </header>
 
-          <form className="record-form" onSubmit={(event) => event.preventDefault()}>
+          <form
+            ref={formElement}
+            className="record-form"
+            onSubmit={(event) => event.preventDefault()}
+          >
             <section className="form-section" aria-labelledby="basic-fields">
               <h2 id="basic-fields">基本</h2>
               <label className="field">
@@ -973,6 +1032,7 @@ export function App() {
             <button
               className="bottom-save-button button-primary"
               type="button"
+              disabled={isSaving}
               onClick={() => void saveRecord()}
             >
               保存
@@ -1033,14 +1093,19 @@ export function App() {
               <div className="record-list">
                 {selectedRecords.map((record) => (
                   <button
-                    className="record-summary"
+                    className={`record-summary${record.isUnilateral ? " is-unilateral" : ""}`}
                     type="button"
                     key={record.id}
                     onClick={() => openRecordDetail(record)}
                   >
                     <div className="record-accent" aria-hidden="true" />
                     <div>
-                      <h3>{record.exerciseName}</h3>
+                      <h3>
+                        {record.exerciseName}
+                        {record.isUnilateral && (
+                          <span className="record-side-label">左右</span>
+                        )}
+                      </h3>
                       <p>{summarizeWorkoutRecord(record)}</p>
                     </div>
                   </button>
