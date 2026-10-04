@@ -226,13 +226,17 @@ export function CalendarCarousel({
         >
           {months.map((month, monthIndex) => {
             const interactive = monthIndex === 1;
+            const dates = buildMonthCalendar(month);
             return (
               <div
                 className="month-grid"
+                style={{
+                  gridTemplateRows: `repeat(${dates.length / 7}, minmax(0, 1fr))`,
+                }}
                 key={formatStorageDate(month)}
                 aria-hidden={interactive ? undefined : true}
               >
-                {buildMonthCalendar(month).map((date) => {
+                {dates.map((date) => {
                   const dateKey = formatStorageDate(date);
                   const records = recordsByDate[dateKey] ?? [];
                   const className = [
@@ -249,11 +253,19 @@ export function CalendarCarousel({
                     <>
                       <span className="day-number">{date.getDate()}</span>
                       <span className="record-stack">
-                        {records.slice(0, 2).map((record) => (
-                          <span className="record-chip" key={record.id}>
+                        {records.slice(0, 5).map((record) => (
+                          <span
+                            className={`record-chip${record.isUnilateral ? " is-unilateral" : ""}`}
+                            key={record.id}
+                          >
                             {record.exerciseName}
                           </span>
                         ))}
+                        {records.length > 5 && (
+                          <span className="record-overflow-count">
+                            ほか{records.length - 5}件
+                          </span>
+                        )}
                       </span>
                     </>
                   );
