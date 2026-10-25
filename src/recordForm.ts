@@ -1,4 +1,12 @@
-import type { RecordId, WorkoutRecord, WorkoutSet } from "./types";
+import type {
+  ExerciseId,
+  RecordId,
+  WorkoutRecord,
+  WorkoutSet,
+  StoredWorkoutRecord,
+  DraftWorkoutRecord,
+} from "./types";
+import { formatStorageDate } from "./dateUtils";
 
 import { isValidRepsValue, isValidWeightValue, parseRepsValue } from "./inputConstraints";
 
@@ -13,6 +21,7 @@ export type FormSet = {
 export type RecordForm = {
   date: string;
   exerciseName: string;
+  exerciseId?: ExerciseId;
   topSuccessWeightKg: string;
   topFailedWeightKg: string;
   isUnilateral: boolean;
@@ -52,7 +61,14 @@ export function createForm(date: string): RecordForm {
   };
 }
 
-export function createFormFromWorkoutRecord(record: WorkoutRecord): RecordForm {
+export function createFormFromWorkoutRecord(record: StoredWorkoutRecord): RecordForm {
+  if (record.status === "draft") {
+    return {
+      ...structuredClone(record.form),
+      exerciseName: record.exerciseName,
+      ...(record.exerciseId ? { exerciseId: record.exerciseId } : {}),
+    };
+  }
   const recordSets = record.sets.map((set) =>
     "right" in set
       ? {
@@ -82,6 +98,7 @@ export function createFormFromWorkoutRecord(record: WorkoutRecord): RecordForm {
   return {
     date: record.date,
     exerciseName: record.exerciseName,
+    ...(record.exerciseId ? { exerciseId: record.exerciseId } : {}),
     topSuccessWeightKg: formatOptionalWeight(record.topSet.successWeightKg),
     topFailedWeightKg: formatOptionalWeight(record.topSet.failedWeightKg),
     isUnilateral: record.isUnilateral === true,
@@ -164,7 +181,7 @@ export function countTotalReps(sets: FormSet[], isUnilateral = false): number {
 export function buildWorkoutRecordFromForm(
   form: RecordForm,
   now: Date,
-  baseRecord?: WorkoutRecord,
+  baseRecord?: StoredWorkoutRecord,
 ): BuildWorkoutRecordResult {
   if (form.date.trim() === "") {
     return { ok: false, error: "日付を入力してください。" };
@@ -199,9 +216,11 @@ export function buildWorkoutRecordFromForm(
   return {
     ok: true,
     record: {
+      status: "completed",
       id: baseRecord?.id ?? createRecordId(),
       date: form.date,
       exerciseName: form.exerciseName.trim(),
+      ...(form.exerciseId ? { exerciseId: form.exerciseId } : {}),
       exerciseType: "weighted",
       ...(form.isUnilateral ? { isUnilateral: true } : {}),
       topSet: {
@@ -213,6 +232,43 @@ export function buildWorkoutRecordFromForm(
       createdAt: baseRecord?.createdAt ?? timestamp,
       updatedAt: timestamp,
     },
+  };
+}
+
+export function validateDraftIdentity(
+  form: RecordForm,
+  requiresSelection: boolean,
+): string | null {
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(form.date) ||
+    formatStorageDate(new Date(`${form.date}T00:00:00`)) !== form.date
+  ) {
+    return "有効な日付を入力してください。";
+  }
+  if (!form.exerciseName.trim() || (requiresSelection && !form.exerciseId)) {
+    return "種目を選択してください。";
+  }
+  return null;
+}
+
+export function buildDraftWorkoutRecord(
+  form: RecordForm,
+  now: Date,
+  baseRecord?: StoredWorkoutRecord,
+): DraftWorkoutRecord {
+  const timestamp = now.toISOString();
+  return {
+    status: "draft",
+    id: baseRecord?.id ?? createRecordId(),
+    date: form.date,
+    exerciseName: form.exerciseName,
+    ...(form.exerciseId ? { exerciseId: form.exerciseId } : {}),
+    exerciseType: "weighted",
+    isUnilateral: form.isUnilateral,
+    note: form.note,
+    form: structuredClone(form),
+    createdAt: baseRecord?.createdAt ?? timestamp,
+    updatedAt: timestamp,
   };
 }
 
@@ -310,7 +366,7 @@ function createRecordId(): RecordId {
   return `record_${createUuid()}`;
 }
 
-function createUuid(): string {
+export function createUuid(): string {
   const cryptoApi = globalThis.crypto;
 
   if (typeof cryptoApi?.randomUUID === "function") {

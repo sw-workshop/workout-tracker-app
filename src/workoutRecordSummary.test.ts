@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { WorkoutRecord } from "./types";
+import { buildDraftWorkoutRecord, createForm } from "./recordForm";
 
 import {
   countWorkoutRecordTotalReps,
@@ -29,6 +30,18 @@ function createRecord(record: Partial<WorkoutRecord>): WorkoutRecord {
 }
 
 describe("summarizeWorkoutRecord", () => {
+  it("shows incomplete draft strings without inferred weights or zero values", () => {
+    const form = createForm("2026-10-24");
+    form.exerciseName = "カール";
+    const draft = buildDraftWorkoutRecord(form, new Date());
+    expect(summarizeWorkoutRecord(draft)).toBe("セット未入力");
+    draft.form.isUnilateral = true;
+    draft.form.sets[0].weightKg = "10.";
+    draft.form.sets[1].leftReps = "7";
+    expect(summarizeWorkoutRecord(draft)).toBe(
+      "1: 右 10.kg x 未入力, 左 未入力 x 未入力, 2: 右 未入力 x 未入力, 左 未入力 x 7 reps",
+    );
+  });
   it("shows top set and grouped set reps", () => {
     const record = createRecord({
       topSet: {

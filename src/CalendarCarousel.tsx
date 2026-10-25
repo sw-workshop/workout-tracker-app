@@ -6,7 +6,7 @@ import {
   formatStorageDate,
   isSameMonth,
 } from "./dateUtils";
-import type { WorkoutRecord } from "./types";
+import type { StoredWorkoutRecord as WorkoutRecord } from "./types";
 
 const weekDays = ["月", "火", "水", "木", "金", "土", "日"];
 const swipeThreshold = 50;
@@ -258,6 +258,7 @@ export function CalendarCarousel({
                             className={`record-chip${record.isUnilateral ? " is-unilateral" : ""}`}
                             key={record.id}
                           >
+                            {record.status === "draft" ? "*" : ""}
                             {record.exerciseName}
                           </span>
                         ))}

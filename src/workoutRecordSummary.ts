@@ -1,6 +1,6 @@
-import type { WorkoutRecord } from "./types";
+import type { StoredWorkoutRecord, WorkoutRecord } from "./types";
 
-export function formatWorkoutRecordDate(record: WorkoutRecord): string {
+export function formatWorkoutRecordDate(record: StoredWorkoutRecord): string {
   const [year, month, day] = record.date.split("-");
   return `${year}年${Number(month)}月${Number(day)}日`;
 }
@@ -20,7 +20,28 @@ export function countWorkoutRecordTotalReps(record: WorkoutRecord): number {
   );
 }
 
-export function summarizeWorkoutRecord(record: WorkoutRecord): string {
+export function summarizeWorkoutRecord(record: StoredWorkoutRecord): string {
+  if (record.status === "draft") {
+    const form = record.form;
+    const weight = (text: string) => (text === "" ? "未入力" : `${text}kg`);
+    const reps = (text: string) => (text === "" ? "未入力" : `${text} reps`);
+    const sets = form.sets.flatMap((set, index) => {
+      const values = form.isUnilateral
+        ? [set.weightKg, set.reps, set.leftWeightKg, set.leftReps]
+        : [set.weightKg, set.reps];
+      if (values.every((value) => value === "")) return [];
+      return [
+        `${index + 1}: ${form.isUnilateral ? "右 " : ""}${weight(set.weightKg)} x ${reps(set.reps)}${form.isUnilateral ? `, 左 ${weight(set.leftWeightKg)} x ${reps(set.leftReps)}` : ""}`,
+      ];
+    });
+    return [
+      form.topSuccessWeightKg ? `top ${weight(form.topSuccessWeightKg)}` : "",
+      form.topFailedWeightKg ? `(${weight(form.topFailedWeightKg)}失敗)` : "",
+      sets.join(", ") || "セット未入力",
+    ]
+      .filter(Boolean)
+      .join(" / ");
+  }
   const topParts = [];
   if (record.topSet.successWeightKg !== null) {
     topParts.push(`top ${record.topSet.successWeightKg}kg`);

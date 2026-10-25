@@ -4,6 +4,8 @@ import type { WorkoutRecord } from "./types";
 
 import {
   buildWorkoutRecordFromForm,
+  buildDraftWorkoutRecord,
+  validateDraftIdentity,
   createForm,
   createFormFromWorkoutRecord,
 } from "./recordForm";
@@ -36,6 +38,55 @@ afterEach(() => {
 });
 
 describe("buildWorkoutRecordFromForm", () => {
+  it("preserves incomplete unilateral input, empty rows and raw strings in drafts", () => {
+    const form = createForm("2026-10-24");
+    form.exerciseName = "アームカール";
+    form.exerciseId = "exercise_curl";
+    form.isUnilateral = true;
+    form.topSuccessWeightKg = "30.";
+    form.note = " 途中 ";
+    form.sets[0].weightKg = "10.";
+    form.sets[0].reps = "8";
+    const draft = buildDraftWorkoutRecord(form, now);
+    expect(draft.status).toBe("draft");
+    expect(createFormFromWorkoutRecord(draft)).toEqual(form);
+    form.sets[0].reps = "9";
+    expect(draft.form.sets[0].reps).toBe("8");
+    const again = buildDraftWorkoutRecord(form, new Date("2026-10-25"), draft);
+    expect(again.id).toBe(draft.id);
+    expect(again.createdAt).toBe(draft.createdAt);
+    expect(buildWorkoutRecordFromForm(form, now, again).ok).toBe(false);
+  });
+
+  it("requires only a valid date and exercise identity for draft saving", () => {
+    const form = createForm("2026-02-30");
+    form.exerciseName = "スクワット";
+    expect(validateDraftIdentity(form, false)).not.toBeNull();
+    form.date = "2026-10-24";
+    expect(validateDraftIdentity(form, true)).not.toBeNull();
+    form.exerciseId = "exercise_squat";
+    expect(validateDraftIdentity(form, true)).toBeNull();
+    form.exerciseName = " ";
+    expect(validateDraftIdentity(form, false)).not.toBeNull();
+  });
+
+  it("converts completed records to editable draft input and completes with the same identity", () => {
+    const form = createFormFromWorkoutRecord(baseRecord);
+    const draft = buildDraftWorkoutRecord(form, now, baseRecord);
+    const completed = buildWorkoutRecordFromForm(
+      createFormFromWorkoutRecord(draft),
+      now,
+      draft,
+    );
+    expect(completed.ok).toBe(true);
+    if (!completed.ok) return;
+    expect(completed.record).toMatchObject({
+      status: "completed",
+      id: baseRecord.id,
+      createdAt: baseRecord.createdAt,
+      sets: baseRecord.sets,
+    });
+  });
   it("builds a workout record from complete form rows and ignores empty rows", () => {
     const form = createForm("2026-08-23");
     form.exerciseName = "ベンチプレス";

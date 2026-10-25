@@ -122,6 +122,200 @@ input[aria-invalid="true"],
   background: #ffffff;
 }
 
+.exercise-picker-content {
+  min-height: 0;
+  overflow-y: auto;
+  background: #ffffff;
+}
+
+.calendar-menu {
+  position: relative;
+  justify-self: end;
+}
+
+.calendar-menu > button {
+  width: 36px;
+  height: 36px;
+  font-size: 1.2rem;
+}
+
+.calendar-menu-items {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  width: 190px;
+  border: 1px solid #9fb6cc;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #ffffff;
+  box-shadow: 0 5px 12px rgb(16 24 40 / 16%);
+}
+
+.calendar-menu-items button,
+.management-list button {
+  min-height: 48px;
+  width: 100%;
+  padding: 12px 16px;
+  background: #ffffff;
+  border-bottom: 1px solid #c8d0d9;
+  text-align: left;
+}
+
+.management-list button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  overflow-wrap: anywhere;
+}
+
+.management-list button > span:last-child {
+  flex: none;
+  font-size: 0.8rem;
+  color: #596675;
+}
+
+.management-list button > span:first-child,
+.link-record > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.link-record input {
+  flex: none;
+}
+
+.management-notice {
+  padding: 12px 16px;
+  color: #246344;
+}
+
+.management-register-section {
+  padding: 16px;
+  border-top: 1px solid #aab8c7;
+  background: #ffffff;
+}
+
+.management-section-heading {
+  margin: 0;
+  padding: 9px 16px;
+  min-height: 36px;
+  font-size: 0.9rem;
+  line-height: 18px;
+  font-weight: 600;
+  color: #485465;
+  background: #eef0f3;
+}
+
+.management-register-section button {
+  width: 100%;
+}
+
+.link-record {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  border-bottom: 1px solid #dce2e8;
+}
+
+.link-record input {
+  width: 22px;
+  min-height: 22px;
+  height: 22px;
+  padding: 0;
+}
+
+.field select {
+  width: 100%;
+  min-height: 48px;
+  padding: 8px;
+  font: inherit;
+  color: #18202a;
+  border: 1px solid #cfd8e3;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.exercise-options button {
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  padding: 12px 16px;
+  text-align: left;
+  border-bottom: 1px solid #c8d0d9;
+  background: #ffffff;
+  overflow-wrap: anywhere;
+}
+
+.exercise-combobox {
+  position: relative;
+  z-index: 2;
+}
+
+.exercise-combo-control {
+  position: relative;
+}
+
+.exercise-combo-control input {
+  padding-right: 48px;
+}
+
+.exercise-combo-toggle {
+  position: absolute;
+  right: 1px;
+  top: 1px;
+  bottom: 1px;
+  width: 44px;
+  border-left: 1px solid #cfd8e3;
+  background: #eef3f8;
+  border-radius: 0 7px 7px 0;
+}
+
+.exercise-combobox .exercise-options {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background: #ffffff;
+  border: 1px solid #9fb6cc;
+  border-radius: 0 0 6px 6px;
+  box-shadow: 0 5px 12px rgb(16 24 40 / 16%);
+  overflow: hidden;
+}
+
+.exercise-options button:hover,
+.exercise-options button.is-active,
+.exercise-options button[aria-selected="true"] {
+  background: #2369a6;
+  color: #ffffff;
+}
+
+.exercise-register-button {
+  min-height: 48px;
+  padding: 12px 16px;
+}
+
+.exercise-options .exercise-register-button {
+  border-top: 1px solid #9fb6cc;
+  border-bottom: 0;
+  background: #eef3f8;
+  color: #2369a6;
+}
+
+.exercise-suggestions {
+  max-height: 144px;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+}
+
+.exercise-suggestions button {
+  height: 48px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .record-form-app,
 .record-detail-app {
   height: 100%;
@@ -764,7 +958,63 @@ input[aria-invalid="true"],
 }
 
 .form-footer {
-  padding: 6px 12px calc(8px + env(safe-area-inset-bottom, 0px));
+  padding: 4px 12px calc(4px + env(safe-area-inset-bottom, 0px));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.form-footer > button:only-child {
+  grid-column: 1 / -1;
+}
+
+.form-footer > button {
+  min-height: 44px;
+  padding-block: 6px;
+  font-size: 0.95rem;
+}
+
+.form-footer > .button-secondary {
+  background: #ffffff;
+  color: #315d85;
+  border-color: #8ca5bd;
+}
+
+.detail-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.detail-section-heading h2 {
+  margin-bottom: 0;
+}
+
+.action-footer .resume-record-button {
+  min-height: 48px;
+  padding-block: 12px;
+  margin-top: 4px;
+  font-size: 0.95rem;
+}
+
+.progress-label {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 5px;
+  border: 1px solid #718096;
+  border-radius: 3px;
+  color: #435166;
+  font-size: 0.7rem;
+  vertical-align: middle;
+}
+
+.save-notice {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 8px 12px;
+  color: #22643f;
+  background: #edf8f1;
 }
 
 .action-footer .edit-button,
