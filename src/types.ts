@@ -1,5 +1,16 @@
 export type RecordId = `record_${string}`;
 
+export type ExerciseId = `exercise_${string}`;
+
+export type Exercise = {
+  id: ExerciseId;
+  name: string;
+  defaultIsUnilateral: boolean;
+  isHidden: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type ExerciseType = "weighted";
 
 export type TopSet = {
@@ -27,9 +38,11 @@ export type UnilateralWorkoutSet = {
 export type WorkoutSet = StandardWorkoutSet | UnilateralWorkoutSet;
 
 export type WorkoutRecord = {
+  status?: "completed";
   id: RecordId;
   date: string;
   exerciseName: string;
+  exerciseId?: ExerciseId;
   exerciseType: ExerciseType;
   isUnilateral?: boolean;
   topSet: TopSet;
@@ -38,3 +51,21 @@ export type WorkoutRecord = {
   createdAt: string;
   updatedAt: string;
 };
+
+export type DraftWorkoutRecord = Pick<
+  WorkoutRecord,
+  | "id"
+  | "date"
+  | "exerciseName"
+  | "exerciseId"
+  | "exerciseType"
+  | "createdAt"
+  | "updatedAt"
+> & {
+  status: "draft";
+  isUnilateral: boolean;
+  note: string;
+  form: import("./recordForm").RecordForm;
+};
+
+export type StoredWorkoutRecord = WorkoutRecord | DraftWorkoutRecord;

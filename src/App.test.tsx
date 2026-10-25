@@ -15,7 +15,8 @@ import type { ReactElement } from "react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { WorkoutRecord } from "./types";
+import type { WorkoutRecord, StoredWorkoutRecord } from "./types";
+import { buildDraftWorkoutRecord, createFormFromWorkoutRecord } from "./recordForm";
 
 import { App } from "./App";
 import { WorkoutSheet } from "./WorkoutSheet";
@@ -76,6 +77,20 @@ function selectedDayPanel(): HTMLElement {
   return screen.getByRole("region", { name: "選択日の記録" });
 }
 
+async function enterExercise(user: ReturnType<typeof userEvent.setup>, name: string) {
+  await openExerciseRegistration(user);
+  await user.type(screen.getByLabelText("登録する種目名"), name);
+  await user.click(screen.getByRole("button", { name: "登録して選択" }));
+  await screen.findByRole("region", { name: "記録追加フォーム" });
+}
+
+async function openExerciseRegistration(user: ReturnType<typeof userEvent.setup>) {
+  if (!screen.queryByRole("button", { name: /種目を登録/ })) {
+    await user.click(screen.getByLabelText("種目名"));
+  }
+  await user.click(screen.getByRole("button", { name: /種目を登録/ }));
+}
+
 function calendarPanel(): HTMLElement {
   return screen.getByRole("region", { name: /のカレンダー/ });
 }
@@ -133,7 +148,7 @@ function swipeCalendar({
 }
 
 function saveButton(): HTMLElement {
-  return within(saveAction()).getByRole("button", { name: "保存" });
+  return within(saveAction()).getByRole("button", { name: /^(保存|種目を完了)$/ });
 }
 
 function saveAction(): HTMLElement {
@@ -145,6 +160,515 @@ function recordAction(): HTMLElement {
 }
 
 describe("App", () => {
+  it.each(["pointer", "keyboard", "wheel"])(
+    "dismisses the saved notice on the first %s interaction",
+    async (interaction) => {
+      const user = userEvent.setup();
+      const draft = buildDraftWorkoutRecord(
+        createFormFromWorkoutRecord(createRecord({})),
+        new Date(),
+      );
+      window.localStorage.setItem("workout-tracker.records", JSON.stringify([draft]));
+      render(<App />);
+      await user.click(
+        await within(selectedDayPanel()).findByRole("button", { name: /ベンチプレス/ }),
+      );
+      await user.click(screen.getByRole("button", { name: "編集" }));
+      await user.click(within(saveAction()).getByRole("button", { name: "一時保存" }));
+      expect(screen.getByRole("status")).toHaveTextContent("一時保存しました");
+      const field = screen.getByLabelText("メモ");
+      if (interaction === "pointer") fireEvent.pointerDown(field);
+      else if (interaction === "keyboard") fireEvent.keyDown(field, { key: "Tab" });
+      else fireEvent.wheel(field, { deltaY: 20 });
+      expect(screen.queryByRole("status")).not.toBeInTheDocument();
+      expect(loadRecords()[0]).toMatchObject({ id: draft.id, status: "draft" });
+    },
+  );
+
+  it("offers temporary save in the header menu and places progress beside the Basic heading", async () => {
+    const user = userEvent.setup();
+    const draft = buildDraftWorkoutRecord(
+      createFormFromWorkoutRecord(createRecord({})),
+      new Date(),
+    );
+    window.localStorage.setItem("workout-tracker.records", JSON.stringify([draft]));
+    render(<App />);
+    await user.click(
+      await within(selectedDayPanel()).findByRole("button", { name: /ベンチプレス/ }),
+    );
+    expect(screen.getByRole("heading", { name: "基本" }).parentElement).toContainElement(
+      screen.getByText("進行中"),
+    );
+    await user.click(screen.getByRole("button", { name: "編集" }));
+    const menuButton = screen.getByRole("button", { name: "記録メニュー" });
+    expect(menuButton).toHaveAttribute("aria-expanded", "false");
+    await user.click(menuButton);
+    expect(menuButton).toHaveAttribute("aria-expanded", "true");
+    await user.keyboard("{Escape}");
+    expect(menuButton).toHaveAttribute("aria-expanded", "false");
+    await user.click(menuButton);
+    await user.click(
+      within(document.getElementById("record-form-menu")!).getByRole("button", {
+        name: "一時保存",
+      }),
+    );
+    expect(menuButton).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("status")).toBeInTheDocument();
+    const buttons = within(saveAction()).getAllByRole("button");
+    buttons.forEach((button) => expect(button).toHaveClass("button-secondary"));
+  });
+  it("saves raw incomplete input without leaving, resumes it and completes the same record", async () => {
+    const user = userEvent.setup();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: /新しい記録を作成/ }));
+    await enterExercise(user, "ダンベルカール");
+    await user.click(screen.getByRole("checkbox", { name: "片側種目" }));
+    await user.type(screen.getByLabelText("成功重量"), "30.");
+    await user.type(screen.getAllByLabelText("重量")[0], "10.");
+    const draftButton = () =>
+      within(saveAction()).getByRole("button", { name: "一時保存" });
+    await user.click(draftButton());
+    expect(screen.getByRole("region", { name: "記録追加フォーム" })).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("一時保存しました");
+    const read = (): StoredWorkoutRecord[] =>
+      JSON.parse(window.localStorage.getItem("workout-tracker.records")!);
+    const first = read()[0];
+    expect(first.status).toBe("draft");
+    if (first.status !== "draft") throw new Error("Expected draft");
+    expect(first.form.sets).toHaveLength(3);
+    expect(first.form.topSuccessWeightKg).toBe("30.");
+    expect(first.form.sets[0].weightKg).toBe("10.");
+    await user.click(draftButton());
+    expect(read()).toHaveLength(1);
+    expect(read()[0]).toMatchObject({ ...first, updatedAt: expect.any(String) });
+    expect(read()[0].id).toBe(first.id);
+    await user.click(screen.getByRole("button", { name: /戻る/ }));
+    expect(confirm).not.toHaveBeenCalled();
+    expect(within(activeMonth()).getByText("*ダンベルカール")).toBeInTheDocument();
+    expect(within(selectedDayPanel()).getByText("進行中")).toBeInTheDocument();
+    await user.click(
+      within(selectedDayPanel()).getByRole("button", { name: /ダンベルカール/ }),
+    );
+    expect(screen.queryByText(/合計 .* reps/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "編集" }));
+    expect(screen.getByLabelText("成功重量")).toHaveValue("30.");
+    const firstRow = () => within(document.querySelector<HTMLElement>(".set-pair")!);
+    expect(firstRow().getByLabelText("重量")).toHaveValue("10.");
+    await user.click(saveButton());
+    expect(screen.getByRole("region", { name: "記録編集フォーム" })).toBeInTheDocument();
+    expect(read()[0].status).toBe("draft");
+    await user.clear(screen.getByLabelText("成功重量"));
+    await user.type(screen.getByLabelText("成功重量"), "30");
+    await user.clear(firstRow().getByLabelText("重量"));
+    await user.type(firstRow().getByLabelText("重量"), "10");
+    await user.type(firstRow().getByLabelText("reps"), "8");
+    await user.type(screen.getByLabelText("1セット目（左）の重量"), "9");
+    await user.type(screen.getByLabelText("1セット目（左）のreps"), "7");
+    await user.click(saveButton());
+    expect(
+      screen.getByRole("heading", { name: formatMonthTitle(new Date()) }),
+    ).toBeInTheDocument();
+    expect(read()).toHaveLength(1);
+    expect(read()[0]).toMatchObject({
+      status: "completed",
+      id: first.id,
+      createdAt: first.createdAt,
+    });
+    expect(read()[0]).not.toHaveProperty("form");
+    expect(screen.queryByText("進行中")).not.toBeInTheDocument();
+  });
+
+  it("requires identity for drafts but allows top-only saving and confirms later unsaved changes", async () => {
+    const user = userEvent.setup();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: /新しい記録を作成/ }));
+    await user.click(within(saveAction()).getByRole("button", { name: "一時保存" }));
+    expect(loadRecords()).toEqual([]);
+    await enterExercise(user, "ベンチプレス");
+    fireEvent.change(screen.getByLabelText("日付"), { target: { value: "" } });
+    await user.click(within(saveAction()).getByRole("button", { name: "一時保存" }));
+    expect(loadRecords()).toEqual([]);
+    fireEvent.change(screen.getByLabelText("日付"), { target: { value: todayKey() } });
+    await user.type(screen.getByLabelText("成功重量"), "100");
+    await user.click(within(saveAction()).getByRole("button", { name: "一時保存" }));
+    expect(screen.getByRole("status")).toBeInTheDocument();
+    await user.type(screen.getByLabelText("成功重量"), ".");
+    await user.click(screen.getByRole("button", { name: /戻る/ }));
+    expect(confirm).toHaveBeenCalled();
+    expect(screen.getByLabelText("成功重量")).toHaveValue("100.");
+  });
+
+  it("keeps completed data when returning to draft fails, then converts and stays on detail", async () => {
+    const user = userEvent.setup();
+    const original = createRecord({});
+    saveRecords([original]);
+    render(<App />);
+    await user.click(
+      await within(selectedDayPanel()).findByRole("button", { name: /ベンチプレス/ }),
+    );
+    const storage = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("full");
+    });
+    await user.click(screen.getByRole("button", { name: "進行中に戻す" }));
+    expect(loadRecords()).toEqual([original]);
+    expect(screen.getByRole("alert")).toHaveTextContent("進行中に戻せませんでした");
+    storage.mockRestore();
+    await user.click(screen.getByRole("button", { name: "進行中に戻す" }));
+    expect(screen.getByRole("region", { name: "記録詳細" })).toBeInTheDocument();
+    expect(screen.getByText("進行中")).toBeInTheDocument();
+    expect(loadRecords()[0]).toMatchObject({
+      id: original.id,
+      createdAt: original.createdAt,
+      status: "draft",
+    });
+    await user.click(screen.getByRole("button", { name: "編集" }));
+    expect(screen.getAllByLabelText("重量")[0]).toHaveValue("90");
+    expect(screen.getAllByRole("button", { name: "種目を完了" })).toHaveLength(1);
+  });
+
+  it("preserves draft input on failed save and does not duplicate it after retry or rapid clicks", async () => {
+    const user = userEvent.setup();
+    const draft = buildDraftWorkoutRecord(
+      createFormFromWorkoutRecord(createRecord({})),
+      new Date(),
+    );
+    window.localStorage.setItem("workout-tracker.records", JSON.stringify([draft]));
+    render(<App />);
+    await user.click(
+      await within(selectedDayPanel()).findByRole("button", { name: /ベンチプレス/ }),
+    );
+    await user.click(screen.getByRole("button", { name: "編集" }));
+    await user.type(screen.getByLabelText("メモ"), "追加");
+    const storage = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("full");
+    });
+    const button = within(saveAction()).getByRole("button", { name: "一時保存" });
+    await user.click(button);
+    expect(screen.getByLabelText("メモ")).toHaveValue("追加");
+    expect(loadRecords()[0]).toEqual(draft);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    storage.mockRestore();
+    fireEvent.click(button);
+    fireEvent.click(button);
+    await screen.findByRole("status");
+    expect(loadRecords()).toHaveLength(1);
+    expect(loadRecords()[0]).toMatchObject({ id: draft.id, note: "追加" });
+  });
+  it.each(["before", "after"])(
+    "preserves external records when returning from management fails (%s open)",
+    async (timing) => {
+      const user = userEvent.setup();
+      vi.spyOn(window, "confirm").mockReturnValue(true);
+      const original = createRecord({
+        id: "record_snapshot",
+        exerciseName: "スクワット",
+      });
+      const added = createRecord({ id: "record_external", exerciseName: "別タブ記録" });
+      saveRecords([original]);
+      render(<App />);
+      await within(selectedDayPanel()).findByRole("button", { name: /スクワット/ });
+      if (timing === "before") saveRecords([original, added]);
+      await user.click(screen.getByRole("button", { name: "メニュー" }));
+      await user.click(screen.getByRole("button", { name: "種目管理" }));
+      await screen.findByRole("searchbox", { name: "種目を検索" });
+      if (timing === "after") saveRecords([original, added]);
+      window.localStorage.setItem("workout-tracker.exercises", "{");
+      await user.click(screen.getByRole("button", { name: /戻る/ }));
+      await screen.findByRole("alert");
+      await user.click(
+        within(selectedDayPanel()).getByRole("button", { name: /スクワット/ }),
+      );
+      await user.click(screen.getByRole("button", { name: "記録を削除" }));
+      expect(await screen.findByRole("alert")).toHaveTextContent("別の画面で記録が更新");
+      expect(loadRecords()).toEqual([original, added]);
+    },
+  );
+
+  it("does not advance the migration snapshot after a partial reload failure", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const original = createRecord({
+      id: "record_migration_snapshot",
+      exerciseName: "旧種目",
+    });
+    const added = createRecord({
+      id: "record_migration_external",
+      exerciseName: "別タブ記録",
+    });
+    const stamp = new Date().toISOString();
+    const masters = JSON.stringify([
+      {
+        id: "exercise_snapshot",
+        name: "紐付け先",
+        defaultIsUnilateral: false,
+        isHidden: false,
+        createdAt: stamp,
+        updatedAt: stamp,
+      },
+    ]);
+    window.localStorage.setItem("workout-tracker.exercises", masters);
+    saveRecords([original]);
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "メニュー" }));
+    await user.click(screen.getByRole("button", { name: "既存記録の整理" }));
+    await user.click(await screen.findByRole("button", { name: /旧種目/ }));
+    await user.selectOptions(screen.getByLabelText("紐付け先"), "exercise_snapshot");
+    saveRecords([original, added]);
+    window.localStorage.setItem("workout-tracker.exercises", "{");
+    await user.click(screen.getByRole("button", { name: "1件を紐付ける" }));
+    await screen.findByRole("alert");
+    await user.click(screen.getByRole("button", { name: "最新の内容を読み込む" }));
+    await screen.findByRole("alert");
+    window.localStorage.setItem("workout-tracker.exercises", masters);
+    await user.click(screen.getByRole("button", { name: "1件を紐付ける" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("別の画面で記録が更新");
+    expect(loadRecords()).toEqual([original, added]);
+  });
+
+  it("links legacy records and reflects a master rename in past displays", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    saveRecords([createRecord({ id: "record_link", exerciseName: "片足レッグプレス" })]);
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "メニュー" }));
+    await user.click(screen.getByRole("button", { name: "既存記録の整理" }));
+    await user.click(await screen.findByRole("button", { name: /片足レッグプレス/ }));
+    await user.click(screen.getByRole("button", { name: /種目を登録/ }));
+    await user.type(screen.getByLabelText("管理する種目名"), "片足レッグプレス");
+    await user.click(screen.getByRole("button", { name: "保存" }));
+    await user.click(await screen.findByRole("button", { name: "1件を紐付ける" }));
+    expect(await screen.findByText("未整理の記録はありません。")).toBeInTheDocument();
+    const stored = loadRecords()[0];
+    expect(stored.exerciseId).toMatch(/^exercise_/);
+    expect(stored.exerciseName).toBe("片足レッグプレス");
+    await user.click(screen.getByRole("button", { name: /戻る/ }));
+    await user.click(await screen.findByRole("button", { name: "メニュー" }));
+    await user.click(screen.getByRole("button", { name: "種目管理" }));
+    await user.click(await screen.findByRole("button", { name: /片足レッグプレス/ }));
+    await user.clear(screen.getByLabelText("管理する種目名"));
+    await user.type(screen.getByLabelText("管理する種目名"), "レッグプレス（片足）");
+    await user.click(screen.getByRole("checkbox", { name: "片側種目" }));
+    await user.click(screen.getByRole("button", { name: "保存" }));
+    await screen.findByRole("status");
+    await user.click(screen.getByRole("button", { name: /戻る/ }));
+    expect(
+      await within(selectedDayPanel()).findByRole("button", {
+        name: /レッグプレス（片足）/,
+      }),
+    ).toBeInTheDocument();
+    expect(loadRecords()[0]).toEqual(stored);
+  });
+
+  it("hides and restores a master without removing its historical records", async () => {
+    const user = userEvent.setup();
+    const stamp = new Date().toISOString();
+    window.localStorage.setItem(
+      "workout-tracker.exercises",
+      JSON.stringify([
+        {
+          id: "exercise_managed",
+          name: "スクワット",
+          isHidden: false,
+          defaultIsUnilateral: false,
+          createdAt: stamp,
+          updatedAt: stamp,
+        },
+      ]),
+    );
+    saveRecords([
+      createRecord({ exerciseId: "exercise_managed", exerciseName: "スクワット" }),
+    ]);
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "メニュー" }));
+    await user.click(screen.getByRole("button", { name: "種目管理" }));
+    const savedList = await screen.findByRole("region", { name: "保存済みの種目" });
+    expect(screen.getByRole("heading", { name: "種目を検索" })).toHaveClass(
+      "management-section-heading",
+    );
+    expect(screen.getByRole("heading", { name: "保存済みの種目" })).toHaveClass(
+      "management-section-heading",
+    );
+    expect(screen.getByRole("searchbox", { name: "種目を検索" })).toBeInTheDocument();
+    const register = screen.getByRole("button", { name: /種目を登録/ });
+    expect(savedList).not.toContainElement(register);
+    expect(
+      savedList.compareDocumentPosition(register) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    await user.click(await screen.findByRole("button", { name: /スクワット/ }));
+    await user.click(screen.getByRole("checkbox", { name: "非表示" }));
+    await user.click(screen.getByRole("button", { name: "保存" }));
+    await screen.findByRole("status");
+    expect(screen.queryByRole("button", { name: /スクワット/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("checkbox", { name: "非表示の種目も表示" }));
+    await user.click(screen.getByRole("button", { name: /スクワット/ }));
+    await user.click(screen.getByRole("checkbox", { name: "非表示" }));
+    await user.click(screen.getByRole("button", { name: "保存" }));
+    await screen.findByRole("status");
+    expect(screen.getByRole("button", { name: /スクワット/ })).toBeInTheDocument();
+    expect(loadRecords()).toHaveLength(1);
+  });
+
+  it("clears unmatched edited exercise text on leaving the field but keeps other inputs", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: /新しい記録を作成/ }));
+    await user.type(screen.getAllByLabelText("重量")[0], "60");
+    await user.type(screen.getByLabelText("種目名"), "未登録種目");
+    await user.click(screen.getByLabelText("成功重量"));
+    expect(screen.getByLabelText("種目名")).toHaveValue("");
+    expect(screen.getAllByLabelText("重量")[0]).toHaveValue("60");
+    await user.type(screen.getByLabelText("種目名"), "登録したい種目");
+    await openExerciseRegistration(user);
+    expect(screen.getByLabelText("登録する種目名")).toHaveValue("登録したい種目");
+  });
+
+  it("offers inline candidates and requires reselection after editing a selected name", async () => {
+    const user = userEvent.setup();
+    const timestamp = new Date().toISOString();
+    window.localStorage.setItem(
+      "workout-tracker.exercises",
+      JSON.stringify(
+        Array.from({ length: 5 }, (_, index) => ({
+          id: `exercise_inline_${index}`,
+          name: `ベンチ${index + 1}`,
+          defaultIsUnilateral: false,
+          isHidden: false,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        })),
+      ),
+    );
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: /新しい記録を作成/ }));
+    const name = screen.getByLabelText("種目名");
+    await user.type(name, "ベンチ");
+    const candidates = screen.getByRole("region", { name: "種目候補" });
+    expect(within(candidates).getAllByRole("option")).toHaveLength(5);
+    expect(name).toHaveAttribute("role", "combobox");
+    expect(name).toHaveAttribute("aria-expanded", "true");
+    await user.keyboard("{ArrowDown}{ArrowDown}{Enter}");
+    expect(name).toHaveValue("ベンチ2");
+    expect(name).toHaveAttribute("aria-expanded", "false");
+    await user.click(screen.getByRole("button", { name: "種目候補を開閉" }));
+    expect(screen.getAllByRole("option")).toHaveLength(5);
+    await user.keyboard("{Escape}");
+    expect(name).toHaveAttribute("aria-expanded", "false");
+    await user.clear(name);
+    await user.type(name, "ベンチ");
+    expect(screen.getByRole("listbox")).toHaveClass("exercise-suggestions");
+    const registerButton = screen.getByRole("button", { name: /種目を登録/ });
+    expect(screen.getByRole("listbox")).not.toContainElement(registerButton);
+    expect(screen.getByRole("region", { name: "種目候補" })).toContainElement(
+      registerButton,
+    );
+    expect(screen.getByRole("region", { name: "記録追加フォーム" })).toBeInTheDocument();
+    await user.click(screen.getByRole("option", { name: "ベンチ4" }));
+    await user.type(screen.getAllByLabelText("重量")[0], "60");
+    await user.type(screen.getAllByLabelText("reps")[0], "8");
+    await user.clear(name);
+    await user.type(name, "ベンチ5");
+    await user.click(saveButton());
+    expect(name).toHaveAttribute("aria-invalid", "true");
+    expect(
+      screen.getByText("保存済みの候補から種目を選択するか、種目を登録してください。"),
+    ).toBeInTheDocument();
+    expect(loadRecords()).toHaveLength(0);
+    await user.click(screen.getByRole("option", { name: "ベンチ5" }));
+    await user.click(saveButton());
+    await screen.findByRole("region", { name: /のカレンダー/ });
+    expect(loadRecords()[0].exerciseId).toBe("exercise_inline_4");
+  });
+
+  it("selects a searched master and applies its default without migrating old records", async () => {
+    const user = userEvent.setup();
+    saveRecords([createRecord({ exerciseName: "旧記録" })]);
+    const stamp = new Date().toISOString();
+    window.localStorage.setItem(
+      "workout-tracker.exercises",
+      JSON.stringify([
+        {
+          id: "exercise_curl",
+          name: "ダンベルカール",
+          defaultIsUnilateral: true,
+          isHidden: false,
+          createdAt: stamp,
+          updatedAt: stamp,
+        },
+        {
+          id: "exercise_hidden",
+          name: "非表示種目",
+          defaultIsUnilateral: false,
+          isHidden: true,
+          createdAt: stamp,
+          updatedAt: stamp,
+        },
+      ]),
+    );
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: /新しい記録を作成/ }));
+    await user.click(screen.getByLabelText("種目名"));
+    expect(screen.queryByRole("button", { name: "非表示種目" })).not.toBeInTheDocument();
+    await user.type(screen.getByLabelText("種目名"), "かーる");
+    await user.click(screen.getByRole("option", { name: "ダンベルカール" }));
+    expect(screen.getByLabelText("種目名")).toHaveValue("ダンベルカール");
+    await user.clear(screen.getByLabelText("種目名"));
+    await user.type(screen.getByLabelText("種目名"), "だんべるかーる");
+    await user.click(screen.getByLabelText("成功重量"));
+    expect(screen.getByLabelText("種目名")).toHaveValue("だんべるかーる");
+    await user.click(screen.getByLabelText("種目名"));
+    await user.click(screen.getByRole("option", { name: "ダンベルカール" }));
+    expect(screen.getByLabelText("種目名")).not.toHaveAttribute("placeholder");
+    await user.clear(screen.getByLabelText("種目名"));
+    await user.type(screen.getByLabelText("種目名"), "カール");
+    expect(
+      screen.queryByRole("heading", { name: "保存済みの種目" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /種目を登録/ })).toHaveClass(
+      "exercise-register-button",
+    );
+    await user.click(screen.getByRole("option", { name: "ダンベルカール" }));
+    expect(screen.getByRole("checkbox", { name: "片側種目" })).toBeChecked();
+    expect(loadRecords()[0].exerciseId).toBeUndefined();
+  });
+
+  it("keeps entered sets and mode when selecting a different master", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: /新しい記録を作成/ }));
+    await user.type(screen.getAllByLabelText("重量")[0], "60");
+    await user.type(screen.getAllByLabelText("reps")[0], "8");
+    await user.type(screen.getByLabelText("種目名"), "片側新種目");
+    await openExerciseRegistration(user);
+    expect(screen.getByLabelText("登録する種目名")).toHaveValue("片側新種目");
+    await user.click(screen.getByRole("checkbox", { name: "片側種目" }));
+    await user.click(screen.getByRole("button", { name: "登録して選択" }));
+    expect(screen.getByRole("checkbox", { name: "片側種目" })).not.toBeChecked();
+    expect(screen.getAllByLabelText("重量")[0]).toHaveValue("60");
+    expect(screen.getAllByLabelText("reps")[0]).toHaveValue("8");
+    await user.click(saveButton());
+    await screen.findByRole("region", { name: /のカレンダー/ });
+    expect(loadRecords()[0].exerciseId).toMatch(/^exercise_/);
+  });
+
+  it("retains addition input after a storage failure and allows retry", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: /新しい記録を作成/ }));
+    await openExerciseRegistration(user);
+    await user.type(screen.getByLabelText("登録する種目名"), "再試行種目");
+    const failure = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("容量不足");
+    });
+    await user.click(screen.getByRole("button", { name: "登録して選択" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("容量不足");
+    expect(screen.getByLabelText("登録する種目名")).toHaveValue("再試行種目");
+    failure.mockRestore();
+    await user.click(screen.getByRole("button", { name: "登録して選択" }));
+    expect(await screen.findByLabelText("種目名")).toHaveValue("再試行種目");
+  });
+
   it.each([
     [2021, 1, 28],
     [2026, 8, 35],
@@ -224,8 +748,13 @@ describe("App", () => {
     const user = userEvent.setup();
     render(<App />);
     await user.click(screen.getByRole("button", { name: /新しい記録を作成/ }));
-    expect(screen.getAllByRole("button", { name: "保存" })).toHaveLength(2);
-    await user.click(screen.getAllByRole("button", { name: "保存" })[0]);
+    expect(screen.getAllByRole("button", { name: "種目を完了" })).toHaveLength(1);
+    await user.click(screen.getByRole("button", { name: "記録メニュー" }));
+    await user.click(
+      within(document.getElementById("record-form-menu")!).getByRole("button", {
+        name: "種目を完了",
+      }),
+    );
     expect(screen.getByLabelText("種目名")).toHaveFocus();
     expect(loadRecords()).toEqual([]);
   });
@@ -234,10 +763,15 @@ describe("App", () => {
     const user = userEvent.setup();
     render(<App />);
     await user.click(screen.getByRole("button", { name: /新しい記録を作成/ }));
-    await user.type(screen.getByLabelText("種目名"), "ベンチプレス");
+    await enterExercise(user, "ベンチプレス");
     await user.type(screen.getAllByLabelText("重量")[0], "60");
     await user.type(screen.getAllByLabelText("reps")[0], "8");
-    await user.click(screen.getAllByRole("button", { name: "保存" })[0]);
+    await user.click(screen.getByRole("button", { name: "記録メニュー" }));
+    await user.click(
+      within(document.getElementById("record-form-menu")!).getByRole("button", {
+        name: "種目を完了",
+      }),
+    );
     expect(loadRecords()).toHaveLength(1);
     expect(loadRecords()[0].sets).toEqual([{ setNumber: 1, weightKg: 60, reps: 8 }]);
   });
@@ -550,7 +1084,7 @@ describe("App", () => {
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: /新しい記録を作成/ }));
-    await user.type(screen.getByLabelText("種目名"), "ラットプルダウン");
+    await enterExercise(user, "ラットプルダウン");
     await user.type(screen.getAllByLabelText("重量")[0], "60");
     await user.type(screen.getAllByLabelText("reps")[0], "10");
     await user.click(saveButton());
@@ -572,7 +1106,7 @@ describe("App", () => {
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: /新しい記録を作成/ }));
-    await user.type(screen.getByLabelText("種目名"), "ダンベルアームカール");
+    await enterExercise(user, "ダンベルアームカール");
     await user.click(screen.getByRole("checkbox", { name: "片側種目" }));
     await user.type(screen.getAllByLabelText("重量")[0], "10");
     await user.type(screen.getAllByLabelText("reps")[0], "10");
@@ -612,7 +1146,7 @@ describe("App", () => {
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: /新しい記録を作成/ }));
-    await user.type(screen.getByLabelText("種目名"), "ダンベルアームカール");
+    await enterExercise(user, "ダンベルアームカール");
     await user.click(screen.getByRole("checkbox", { name: "片側種目" }));
     await user.type(screen.getAllByLabelText("重量")[0], "10");
     await user.type(screen.getAllByLabelText("reps")[0], "10");
@@ -634,7 +1168,7 @@ describe("App", () => {
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: /新しい記録を作成/ }));
-    await user.type(screen.getByLabelText("種目名"), "ダンベルアームカール");
+    await enterExercise(user, "ダンベルアームカール");
     const unilateralToggle = screen.getByRole("checkbox", { name: "片側種目" });
     await user.click(unilateralToggle);
     await user.type(screen.getAllByLabelText("重量")[0], "10");
@@ -676,20 +1210,20 @@ describe("App", () => {
 
   it("shows an error when saving fails unexpectedly", async () => {
     const user = userEvent.setup();
-    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
-      throw new Error("Storage write failed");
-    });
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: /新しい記録を作成/ }));
-    await user.type(screen.getByLabelText("種目名"), "ラットプルダウン");
+    await enterExercise(user, "ラットプルダウン");
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("Storage write failed");
+    });
     await user.type(screen.getAllByLabelText("重量")[0], "60");
     await user.type(screen.getAllByLabelText("reps")[0], "10");
     await user.click(saveButton());
 
     expect(
       await screen.findByText(
-        "保存中にエラーが発生しました。画面を再読み込みしてもう一度お試しください。",
+        "保存中にエラーが発生しました。入力内容を残しています。もう一度お試しください。",
       ),
     ).toBeInTheDocument();
   });
@@ -761,7 +1295,7 @@ describe("App", () => {
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: /新しい記録を作成/ }));
-    await user.type(screen.getByLabelText("種目名"), "ベンチプレス");
+    await enterExercise(user, "ベンチプレス");
     await user.type(screen.getAllByLabelText("重量")[0], "60");
     await user.type(screen.getAllByLabelText("reps")[0], "8");
 
@@ -801,7 +1335,7 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: /新しい記録を作成/ }));
 
     expect(saveAction()).toBeInTheDocument();
-    expect(within(saveAction()).getByRole("button", { name: "保存" })).toBeEnabled();
+    expect(saveButton()).toBeEnabled();
 
     await user.click(screen.getByRole("button", { name: /戻る/ }));
     await user.click(
@@ -810,7 +1344,7 @@ describe("App", () => {
     await user.click(screen.getByRole("button", { name: "編集" }));
 
     expect(saveAction()).toBeInTheDocument();
-    expect(within(saveAction()).getByRole("button", { name: "保存" })).toBeEnabled();
+    expect(saveButton()).toBeEnabled();
   });
 
   it("keeps a changed new-record form when discarding is cancelled", async () => {
@@ -822,7 +1356,7 @@ describe("App", () => {
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: /新しい記録を作成/ }));
-    await user.type(screen.getByLabelText("種目名"), "スクワット");
+    await enterExercise(user, "スクワット");
     await user.click(screen.getByRole("button", { name: /戻る/ }));
 
     expect(screen.getByRole("region", { name: "記録追加フォーム" })).toBeInTheDocument();
@@ -855,7 +1389,7 @@ describe("App", () => {
     const cleanEvent = new Event("beforeunload", { cancelable: true });
     expect(window.dispatchEvent(cleanEvent)).toBe(true);
 
-    const exerciseName = screen.getByLabelText("種目名");
+    const exerciseName = screen.getByLabelText("メモ");
     await user.type(exerciseName, "デッドリフト");
     const dirtyEvent = new Event("beforeunload", { cancelable: true });
     expect(window.dispatchEvent(dirtyEvent)).toBe(false);
@@ -871,7 +1405,7 @@ describe("App", () => {
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: /新しい記録を作成/ }));
-    await user.type(screen.getByLabelText("種目名"), "ベンチプレス");
+    await enterExercise(user, "ベンチプレス");
     const firstSetReps = screen.getAllByLabelText("reps")[0];
     await user.type(screen.getAllByLabelText("重量")[0], "60");
     await user.click(saveButton());
@@ -916,7 +1450,7 @@ describe("App", () => {
       within(recordAction())
         .getAllByRole("button")
         .map((button) => button.textContent),
-    ).toEqual(["編集", "記録を削除"]);
+    ).toEqual(["編集", "記録を削除", "進行中に戻す"]);
 
     await user.click(screen.getByRole("button", { name: /戻る/ }));
 
@@ -1040,6 +1574,19 @@ describe("App", () => {
 
   it("saves edited values and updates the calendar and selected-day list", async () => {
     const user = userEvent.setup();
+    window.localStorage.setItem(
+      "workout-tracker.exercises",
+      JSON.stringify([
+        {
+          id: "exercise_front",
+          name: "フロントスクワット",
+          defaultIsUnilateral: false,
+          isHidden: false,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      ]),
+    );
     const editedDate = dateWithOffset(1);
     saveRecords([
       createRecord({
@@ -1112,6 +1659,52 @@ describe("App", () => {
       await within(selectedDayPanel()).findByText("この日の記録はまだありません。"),
     ).toBeInTheDocument();
     expect(loadRecords()).toEqual([]);
+  });
+
+  it("reports delete conflicts and reloads current records before retrying", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const original = createRecord({ id: "record_conflict", exerciseName: "スクワット" });
+    saveRecords([original]);
+    render(<App />);
+    await user.click(
+      await within(selectedDayPanel()).findByRole("button", { name: /スクワット/ }),
+    );
+    const changed = { ...original, note: "別タブで更新" };
+    const added = createRecord({ id: "record_other", exerciseName: "ベンチプレス" });
+    saveRecords([changed, added]);
+    await user.click(screen.getByRole("button", { name: "記録を削除" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("別の画面で記録が更新");
+    expect(loadRecords()).toEqual([changed, added]);
+    await user.click(screen.getByRole("button", { name: "最新の記録を読み込む" }));
+    expect(await screen.findByText("別タブで更新")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "記録を削除" }));
+    await screen.findByRole("region", { name: /のカレンダー/ });
+    expect(loadRecords()).toEqual([added]);
+  });
+
+  it("keeps the detail after delete storage failure and permits retry", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    saveRecords([
+      createRecord({ id: "record_delete_failure", exerciseName: "スクワット" }),
+    ]);
+    render(<App />);
+    await user.click(
+      await within(selectedDayPanel()).findByRole("button", { name: /スクワット/ }),
+    );
+    const failure = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("容量不足");
+    });
+    await user.click(screen.getByRole("button", { name: "記録を削除" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("削除できませんでした");
+    expect(screen.getByRole("region", { name: "記録詳細" })).toBeInTheDocument();
+    expect(loadRecords()).toHaveLength(1);
+    failure.mockRestore();
+    await user.click(screen.getByRole("button", { name: "記録を削除" }));
+    await screen.findByRole("region", { name: /のカレンダー/ });
+    expect(loadRecords()).toHaveLength(0);
   });
 
   it("keeps a record when delete confirmation is cancelled", async () => {

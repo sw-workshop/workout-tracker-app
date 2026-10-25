@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import type { WorkoutRecord } from "./types";
+import type { Exercise, StoredWorkoutRecord as WorkoutRecord } from "./types";
+import { ExerciseRegistration } from "./ExerciseRegistration";
+import { ExerciseManagement } from "./ExerciseManagement";
+import { DraftWorkoutDetails } from "./DraftWorkoutDetails";
+import { compareExerciseNames, normalizeExerciseSearch } from "./exerciseSearch";
+import {
+  createLocalStorageExerciseRepository,
+  resolveExerciseName,
+} from "./exerciseRepository";
 import { CalendarCarousel } from "./CalendarCarousel";
 import { WorkoutSheet } from "./WorkoutSheet";
 import { readViewState, writeViewState } from "./viewState";
@@ -14,8 +22,11 @@ import {
 } from "./inputConstraints";
 import {
   buildWorkoutRecordFromForm,
+  buildDraftWorkoutRecord,
+  validateDraftIdentity,
   countTotalReps,
   createForm,
+  createUuid,
   createFormFromWorkoutRecord,
   findInvalidRepsSetNumbers,
   findInvalidWeightLabels,
@@ -31,14 +42,6 @@ import {
   summarizeWorkoutRecord,
 } from "./workoutRecordSummary";
 
-const exerciseOptions = [
-  "ベンチプレス",
-  "スクワット",
-  "デッドリフト",
-  "ショルダープレス",
-  "ラットプルダウン",
-  "汎用",
-];
 const defaultReps = 8;
 const minReps = 1;
 const maxReps = 999;
@@ -77,6 +80,7 @@ function FieldError({ message }: { message?: string }) {
 function buildFormValidationErrors(
   form: RecordForm,
   shouldShowRequiredErrors: boolean,
+  requiresExerciseSelection = false,
 ): FormValidationErrors {
   const invalidWeightLabels = findInvalidWeightLabels(form);
   const invalidRepsSetNumbers = findInvalidRepsSetNumbers(form.sets, form.isUnilateral);
@@ -89,6 +93,8 @@ function buildFormValidationErrors(
 
   if (shouldShowRequiredErrors && form.exerciseName.trim() === "") {
     errors.exerciseName = "種目名を入力してください。";
+  } else if (shouldShowRequiredErrors && requiresExerciseSelection && !form.exerciseId) {
+    errors.exerciseName = "保存済みの候補から種目を選択するか、種目を登録してください。";
   }
 
   if (invalidWeightLabels.includes("トップセット成功重量")) {
@@ -216,6 +222,7 @@ function areRecordFormsEqual(left: RecordForm, right: RecordForm): boolean {
   return (
     left.date === right.date &&
     left.exerciseName === right.exerciseName &&
+    left.exerciseId === right.exerciseId &&
     left.topSuccessWeightKg === right.topSuccessWeightKg &&
     left.topFailedWeightKg === right.topFailedWeightKg &&
     left.isUnilateral === right.isUnilateral &&
@@ -283,6 +290,10 @@ export function App() {
     () => createLocalStorageWorkoutRecordRepository(window.localStorage),
     [],
   );
+  const managementRecordRepository = useMemo(
+    () => createLocalStorageWorkoutRecordRepository(window.localStorage),
+    [],
+  );
   const [visibleMonth, setVisibleMonth] = useState(() =>
     restoredView
       ? new Date(`${restoredView.visibleMonth}T00:00:00`)
@@ -296,55 +307,126 @@ export function App() {
   const [sheetRevision, setSheetRevision] = useState(0);
   const [calendarRevision, setCalendarRevision] = useState(0);
   const [records, setRecords] = useState<WorkoutRecord[]>([]);
+  const [exercises, setExercises] = useState<Exercise[]>([]);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [managementMode, setManagementMode] = useState<"manage" | "link" | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [suggestionsOpen, setSuggestionsOpen] = useState(false);
+  const exerciseNameEdited = useRef(false);
+  const [showAllSuggestions, setShowAllSuggestions] = useState(false);
+  const [activeExerciseIndex, setActiveExerciseIndex] = useState(-1);
+  const [requiresExerciseSelection, setRequiresExerciseSelection] = useState(false);
+  const [exerciseLoadError, setExerciseLoadError] = useState("");
+  const exerciseRepository = useMemo(
+    () => createLocalStorageExerciseRepository(window.localStorage),
+    [],
+  );
   const [selectedRecordId, setSelectedRecordId] = useState<string | null>(null);
   const [form, setForm] = useState<RecordForm>(() =>
     createForm(formatStorageDate(today)),
   );
   const [initialForm, setInitialForm] = useState<RecordForm | null>(null);
   const [formError, setFormError] = useState("");
+  const [saveNotice, setSaveNotice] = useState("");
+  const [formMenuOpen, setFormMenuOpen] = useState(false);
+  const [draftValidationOnly, setDraftValidationOnly] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
   const [hasSubmittedForm, setHasSubmittedForm] = useState(false);
+  const exerciseMatches = exercises
+    .filter(
+      (item) =>
+        !item.isHidden &&
+        (showAllSuggestions ||
+          normalizeExerciseSearch(item.name).includes(
+            normalizeExerciseSearch(form.exerciseName),
+          )),
+    )
+    .sort(compareExerciseNames);
+
+  useEffect(() => {
+    if (suggestionsOpen && activeExerciseIndex >= 0) {
+      document
+        .getElementById(`exercise-option-${activeExerciseIndex}`)
+        ?.scrollIntoView?.({ block: "nearest" });
+    }
+  }, [suggestionsOpen, activeExerciseIndex]);
 
   const recordsByDate = useMemo(() => {
     return records.reduce<Record<string, WorkoutRecord[]>>((grouped, record) => {
-      grouped[record.date] = [...(grouped[record.date] ?? []), record];
+      const displayRecord = {
+        ...record,
+        exerciseName: resolveExerciseName(record, exercises),
+      };
+      grouped[record.date] = [...(grouped[record.date] ?? []), displayRecord];
       return grouped;
     }, {});
-  }, [records]);
+  }, [records, exercises]);
 
   const selectedDateKey = formatStorageDate(selectedDate);
   const selectedRecords = recordsByDate[selectedDateKey] ?? [];
-  const selectedRecord =
+  const rawSelectedRecord =
     selectedRecordId === null
       ? null
       : (records.find((record) => record.id === selectedRecordId) ?? null);
+  const selectedRecord = rawSelectedRecord
+    ? {
+        ...rawSelectedRecord,
+        exerciseName: resolveExerciseName(rawSelectedRecord, exercises),
+      }
+    : null;
   const totalReps = countTotalReps(form.sets, form.isUnilateral);
-  const validationErrors = useMemo(
-    () => buildFormValidationErrors(form, hasSubmittedForm),
-    [form, hasSubmittedForm],
-  );
+  const validationErrors = useMemo(() => {
+    if (draftValidationOnly) {
+      const errors: FormValidationErrors = { sets: form.sets.map(() => ({})) };
+      if (!form.date) errors.date = "日付を入力してください。";
+      if (!form.exerciseName.trim() || (requiresExerciseSelection && !form.exerciseId))
+        errors.exerciseName = "種目を選択してください。";
+      return errors;
+    }
+    return buildFormValidationErrors(form, hasSubmittedForm, requiresExerciseSelection);
+  }, [form, hasSubmittedForm, requiresExerciseSelection, draftValidationOnly]);
   const hasUnsavedChanges =
     initialForm !== null && !areRecordFormsEqual(form, initialForm);
 
   useEffect(() => {
     let cancelled = false;
-    void repository.findAll().then((loadedRecords) => {
-      if (cancelled) return;
-      setRecords(loadedRecords);
-      if (restoredView?.recordId) {
-        if (loadedRecords.some((record) => record.id === restoredView.recordId)) {
-          setSelectedRecordId(restoredView.recordId);
-          setViewMode("record-detail");
-        } else {
-          setSelectedDate(today);
-          setVisibleMonth(new Date(today.getFullYear(), today.getMonth(), 1));
+    void exerciseRepository
+      .findAll()
+      .then((loaded) => {
+        if (!cancelled) setExercises(loaded);
+      })
+      .catch(() => {
+        if (!cancelled)
+          setExerciseLoadError(
+            "種目データを読み込めません。保存済みデータは変更していません。",
+          );
+      });
+    void repository
+      .findAll()
+      .then((loadedRecords) => {
+        if (cancelled) return;
+        setRecords(loadedRecords);
+        if (restoredView?.recordId) {
+          if (loadedRecords.some((record) => record.id === restoredView.recordId)) {
+            setSelectedRecordId(restoredView.recordId);
+            setViewMode("record-detail");
+          } else {
+            setSelectedDate(today);
+            setVisibleMonth(new Date(today.getFullYear(), today.getMonth(), 1));
+          }
         }
-      }
-      setRecordsLoaded(true);
-    });
+        setRecordsLoaded(true);
+      })
+      .catch(() => {
+        if (!cancelled)
+          setExerciseLoadError(
+            "記録データを読み込めません。保存済みデータは変更していません。",
+          );
+      });
     return () => {
       cancelled = true;
     };
-  }, [repository, restoredView, today]);
+  }, [repository, exerciseRepository, restoredView, today]);
 
   useEffect(() => {
     if (!recordsLoaded) return;
@@ -400,6 +482,13 @@ export function App() {
   }
 
   function openNewRecordForm() {
+    setFormMenuOpen(false);
+    setSelectedRecordId(null);
+    setSaveNotice("");
+    setDraftValidationOnly(false);
+    exerciseNameEdited.current = false;
+    setSuggestionsOpen(false);
+    setRequiresExerciseSelection(true);
     const nextForm = createForm(formatStorageDate(selectedDate));
     setForm(nextForm);
     setInitialForm(nextForm);
@@ -408,7 +497,42 @@ export function App() {
     setViewMode("new-record");
   }
 
+  async function refreshExercises() {
+    try {
+      setExercises(await exerciseRepository.findAll());
+      setExerciseLoadError("");
+    } catch {
+      setExerciseLoadError(
+        "種目データを読み込めません。保存済みデータは変更していません。",
+      );
+    }
+  }
+
+  function selectExercise(exercise: Exercise) {
+    exerciseNameEdited.current = false;
+    setRequiresExerciseSelection(true);
+    setSuggestionsOpen(false);
+    setExercises((current) => [
+      ...current.filter((item) => item.id !== exercise.id),
+      exercise,
+    ]);
+    const hasSetInput = form.sets.some((set) =>
+      [set.weightKg, set.reps, set.leftWeightKg, set.leftReps].some(
+        (value) => value.trim() !== "",
+      ),
+    );
+    setForm((current) => ({
+      ...current,
+      exerciseId: exercise.id,
+      exerciseName: exercise.name,
+      isUnilateral: hasSetInput ? current.isUnilateral : exercise.defaultIsUnilateral,
+    }));
+    setFormError("");
+    setPickerOpen(false);
+  }
+
   function openRecordDetail(record: WorkoutRecord) {
+    setDeleteError("");
     setSelectedRecordId(record.id);
     setViewMode("record-detail");
   }
@@ -420,6 +544,12 @@ export function App() {
   }
 
   function openEditRecordForm(record: WorkoutRecord) {
+    setFormMenuOpen(false);
+    setSaveNotice("");
+    setDraftValidationOnly(record.status === "draft");
+    exerciseNameEdited.current = false;
+    setSuggestionsOpen(false);
+    setRequiresExerciseSelection(Boolean(record.exerciseId));
     setSelectedRecordId(record.id);
     const nextForm = createFormFromWorkoutRecord(record);
     setForm(nextForm);
@@ -430,6 +560,7 @@ export function App() {
   }
 
   function closeRecordForm() {
+    if (saving.current) return;
     if (hasUnsavedChanges && !window.confirm(discardChangesMessage)) {
       return;
     }
@@ -522,7 +653,7 @@ export function App() {
   }
 
   function addSetRow() {
-    const setId = `set-added-${nextSetRowId.current}`;
+    const setId = `set-added-${nextSetRowId.current}-${createUuid()}`;
     nextSetRowId.current += 1;
 
     setForm((currentForm) => ({
@@ -544,12 +675,36 @@ export function App() {
     }));
   }
 
-  async function saveRecord() {
+  async function saveRecord(asDraft = false) {
     if (saving.current) return;
-    const nextValidationErrors = buildFormValidationErrors(form, true);
+    if (!recordsLoaded) {
+      setFormError(
+        "保存済み記録を読み込めないため保存できません。入力内容は残しています。",
+      );
+      return;
+    }
+    setSaveNotice("");
+    setDraftValidationOnly(asDraft);
+    const identityError = validateDraftIdentity(form, requiresExerciseSelection);
+    if (asDraft && identityError) {
+      setFormError(identityError);
+      setHasSubmittedForm(true);
+      setErrorFocusRevision((value) => value + 1);
+      return;
+    }
+    const nextValidationErrors = buildFormValidationErrors(
+      form,
+      true,
+      requiresExerciseSelection,
+    );
     setHasSubmittedForm(true);
-    if (hasFormValidationErrors(nextValidationErrors)) {
+    if (!asDraft && hasFormValidationErrors(nextValidationErrors)) {
       setFormError("");
+      setErrorFocusRevision((value) => value + 1);
+      return;
+    }
+    if (identityError) {
+      setFormError(identityError);
       setErrorFocusRevision((value) => value + 1);
       return;
     }
@@ -557,12 +712,17 @@ export function App() {
     saving.current = true;
     setIsSaving(true);
     try {
-      const baseRecord = viewMode === "edit-record" ? selectedRecord : null;
-      const result = buildWorkoutRecordFromForm(
-        form,
-        new Date(),
-        baseRecord ?? undefined,
-      );
+      if (requiresExerciseSelection && !form.exerciseId) {
+        setFormError("種目を選択してください。");
+        return;
+      }
+      const baseRecord = selectedRecord;
+      const result = asDraft
+        ? {
+            ok: true as const,
+            record: buildDraftWorkoutRecord(form, new Date(), baseRecord ?? undefined),
+          }
+        : buildWorkoutRecordFromForm(form, new Date(), baseRecord ?? undefined);
       if (!result.ok) {
         setFormError(result.error);
         setErrorFocusRevision((value) => value + 1);
@@ -578,6 +738,14 @@ export function App() {
             );
       await repository.saveAll(nextRecords);
       setRecords(nextRecords);
+      if (asDraft) {
+        setSelectedRecordId(result.record.id);
+        setInitialForm(structuredClone(form));
+        setFormError("");
+        setHasSubmittedForm(false);
+        setSaveNotice("一時保存しました。");
+        return;
+      }
       setSelectedDate(recordDate);
       setVisibleMonth(new Date(recordDate.getFullYear(), recordDate.getMonth(), 1));
       setForm(createForm(form.date));
@@ -586,9 +754,11 @@ export function App() {
       setHasSubmittedForm(false);
       setSelectedRecordId(null);
       setViewMode("calendar");
-    } catch {
+    } catch (reason) {
       setFormError(
-        "保存中にエラーが発生しました。画面を再読み込みしてもう一度お試しください。",
+        reason instanceof Error && reason.message.startsWith("別の画面")
+          ? reason.message
+          : "保存中にエラーが発生しました。入力内容を残しています。もう一度お試しください。",
       );
       setErrorFocusRevision((value) => value + 1);
     } finally {
@@ -597,19 +767,117 @@ export function App() {
     }
   }
 
+  async function resumeSelectedRecord(record: WorkoutRecord) {
+    if (saving.current || record.status === "draft") return;
+    saving.current = true;
+    setIsSaving(true);
+    setDeleteError("");
+    try {
+      const draft = buildDraftWorkoutRecord(
+        createFormFromWorkoutRecord(record),
+        new Date(),
+        record,
+      );
+      const nextRecords = records.map((item) => (item.id === record.id ? draft : item));
+      await repository.saveAll(nextRecords);
+      setRecords(nextRecords);
+    } catch {
+      setDeleteError(
+        "進行中に戻せませんでした。記録は変更していません。最新の記録を確認して再度お試しください。",
+      );
+    } finally {
+      saving.current = false;
+      setIsSaving(false);
+    }
+  }
+
   async function deleteSelectedRecord(record: WorkoutRecord) {
+    if (saving.current) return;
     if (!window.confirm("この記録を削除しますか？")) {
       return;
     }
 
-    const nextRecords = records.filter((currentRecord) => currentRecord.id !== record.id);
-    const recordDate = new Date(`${record.date}T00:00:00`);
-    await repository.saveAll(nextRecords);
-    setRecords(nextRecords);
-    setSelectedRecordId(null);
-    setSelectedDate(recordDate);
-    setVisibleMonth(new Date(recordDate.getFullYear(), recordDate.getMonth(), 1));
-    setViewMode("calendar");
+    saving.current = true;
+    setIsSaving(true);
+    setDeleteError("");
+    try {
+      const nextRecords = records.filter(
+        (currentRecord) => currentRecord.id !== record.id,
+      );
+      const recordDate = new Date(`${record.date}T00:00:00`);
+      await repository.saveAll(nextRecords);
+      setRecords(nextRecords);
+      setSelectedRecordId(null);
+      setSelectedDate(recordDate);
+      setVisibleMonth(new Date(recordDate.getFullYear(), recordDate.getMonth(), 1));
+      setViewMode("calendar");
+    } catch (reason) {
+      setDeleteError(
+        reason instanceof Error && reason.message.startsWith("別の画面")
+          ? "別の画面で記録が更新されています。最新の記録を読み込み、内容を確認してから削除してください。"
+          : "削除できませんでした。時間をおいて再度お試しください。",
+      );
+    } finally {
+      saving.current = false;
+      setIsSaving(false);
+    }
+  }
+
+  async function reloadRecordsAfterDeleteError() {
+    if (saving.current) return;
+    saving.current = true;
+    setIsSaving(true);
+    try {
+      const latest = await repository.findAll();
+      setRecords(latest);
+      setDeleteError("");
+      if (!latest.some((record) => record.id === selectedRecordId)) {
+        setSelectedRecordId(null);
+        setViewMode("calendar");
+      }
+    } catch {
+      setDeleteError(
+        "最新の記録を読み込めませんでした。時間をおいて再度お試しください。",
+      );
+    } finally {
+      saving.current = false;
+      setIsSaving(false);
+    }
+  }
+
+  if (managementMode) {
+    return (
+      <ExerciseManagement
+        mode={managementMode}
+        exerciseRepository={exerciseRepository}
+        recordRepository={managementRecordRepository}
+        onClose={async () => {
+          try {
+            const masters = await exerciseRepository.findAll();
+            const workouts = await repository.findAll();
+            setExercises(masters);
+            setRecords(workouts);
+          } catch {
+            setExerciseLoadError(
+              "最新の内容を読み込めませんでした。保存済みデータは変更していません。",
+            );
+          } finally {
+            setManagementMode(null);
+          }
+        }}
+      />
+    );
+  }
+
+  if (pickerOpen) {
+    return (
+      <ExerciseRegistration
+        initialName={form.exerciseName}
+        repository={exerciseRepository}
+        onSelect={selectExercise}
+        onClose={() => setPickerOpen(false)}
+      />
+    );
   }
 
   if (viewMode === "record-detail" && selectedRecord !== null) {
@@ -633,7 +901,12 @@ export function App() {
 
           <div className="record-detail">
             <section className="form-section" aria-labelledby="detail-basic-fields">
-              <h2 id="detail-basic-fields">基本</h2>
+              <div className="detail-section-heading">
+                <h2 id="detail-basic-fields">基本</h2>
+                {selectedRecord.status === "draft" && (
+                  <span className="progress-label">進行中</span>
+                )}
+              </div>
               <div className="detail-field">
                 <span>日付</span>
                 <p>{formatWorkoutRecordDate(selectedRecord)}</p>
@@ -644,51 +917,56 @@ export function App() {
               </div>
             </section>
 
-            <section className="form-section" aria-labelledby="detail-top-set-fields">
-              <h2 id="detail-top-set-fields">トップセット</h2>
-              <div className="top-set-grid">
-                <div className="detail-field">
-                  <span>成功重量</span>
-                  <p>{formatWeight(selectedRecord.topSet.successWeightKg)}</p>
-                </div>
-                <div className="detail-field">
-                  <span>失敗重量</span>
-                  <p>{formatWeight(selectedRecord.topSet.failedWeightKg)}</p>
-                </div>
-              </div>
-            </section>
-
-            <section className="form-section" aria-labelledby="detail-set-fields">
-              <div className="set-section-heading">
-                <h2 id="detail-set-fields">セット内容</h2>
-                <p>合計 {countWorkoutRecordTotalReps(selectedRecord)} reps</p>
-              </div>
-              <div className="detail-set-list">
-                {selectedRecord.sets.map((set) =>
-                  "right" in set ? (
-                    <div className="detail-set-pair" key={set.setNumber}>
-                      <div className="detail-set-row unilateral-row right-side">
-                        <span className="set-side-badge">{set.setNumber} 右</span>
-                        <span>{formatWeight(set.right.weightKg)}</span>
-                        <span>{formatReps(set.right.reps)}</span>
-                      </div>
-                      <div className="detail-set-row unilateral-row left-side">
-                        <span className="set-side-badge">{set.setNumber} 左</span>
-                        <span>{formatWeight(set.left.weightKg)}</span>
-                        <span>{formatReps(set.left.reps)}</span>
-                      </div>
+            {selectedRecord.status === "draft" ? (
+              <DraftWorkoutDetails record={selectedRecord} />
+            ) : (
+              <>
+                <section className="form-section" aria-labelledby="detail-top-set-fields">
+                  <h2 id="detail-top-set-fields">トップセット</h2>
+                  <div className="top-set-grid">
+                    <div className="detail-field">
+                      <span>成功重量</span>
+                      <p>{formatWeight(selectedRecord.topSet.successWeightKg)}</p>
                     </div>
-                  ) : (
-                    <div className="detail-set-row" key={set.setNumber}>
-                      <span className="set-number">{set.setNumber}</span>
-                      <span>{formatWeight(set.weightKg)}</span>
-                      <span>{formatReps(set.reps)}</span>
+                    <div className="detail-field">
+                      <span>失敗重量</span>
+                      <p>{formatWeight(selectedRecord.topSet.failedWeightKg)}</p>
                     </div>
-                  ),
-                )}
-              </div>
-            </section>
+                  </div>
+                </section>
 
+                <section className="form-section" aria-labelledby="detail-set-fields">
+                  <div className="set-section-heading">
+                    <h2 id="detail-set-fields">セット内容</h2>
+                    <p>合計 {countWorkoutRecordTotalReps(selectedRecord)} reps</p>
+                  </div>
+                  <div className="detail-set-list">
+                    {selectedRecord.sets.map((set) =>
+                      "right" in set ? (
+                        <div className="detail-set-pair" key={set.setNumber}>
+                          <div className="detail-set-row unilateral-row right-side">
+                            <span className="set-side-badge">{set.setNumber} 右</span>
+                            <span>{formatWeight(set.right.weightKg)}</span>
+                            <span>{formatReps(set.right.reps)}</span>
+                          </div>
+                          <div className="detail-set-row unilateral-row left-side">
+                            <span className="set-side-badge">{set.setNumber} 左</span>
+                            <span>{formatWeight(set.left.weightKg)}</span>
+                            <span>{formatReps(set.left.reps)}</span>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="detail-set-row" key={set.setNumber}>
+                          <span className="set-number">{set.setNumber}</span>
+                          <span>{formatWeight(set.weightKg)}</span>
+                          <span>{formatReps(set.reps)}</span>
+                        </div>
+                      ),
+                    )}
+                  </div>
+                </section>
+              </>
+            )}
             <section className="form-section" aria-labelledby="detail-note-field">
               <h2 id="detail-note-field">所感</h2>
               <p className={selectedRecord.note === "" ? "empty-note" : "detail-note"}>
@@ -697,8 +975,24 @@ export function App() {
             </section>
           </div>
           <div className="action-footer" role="group" aria-label="記録操作">
+            {deleteError && (
+              <>
+                <p role="alert" className="field-error">
+                  {deleteError}
+                </p>
+                <button
+                  type="button"
+                  className="button-secondary"
+                  disabled={isSaving}
+                  onClick={() => void reloadRecordsAfterDeleteError()}
+                >
+                  最新の記録を読み込む
+                </button>
+              </>
+            )}
             <button
               className="edit-button button-secondary"
+              disabled={isSaving}
               type="button"
               onClick={() => openEditRecordForm(selectedRecord)}
             >
@@ -706,11 +1000,22 @@ export function App() {
             </button>
             <button
               className="delete-record-button button-danger"
+              disabled={isSaving}
               type="button"
               onClick={() => void deleteSelectedRecord(selectedRecord)}
             >
               記録を削除
             </button>
+            {selectedRecord.status !== "draft" && (
+              <button
+                type="button"
+                className="resume-record-button button-secondary"
+                disabled={isSaving}
+                onClick={() => void resumeSelectedRecord(selectedRecord)}
+              >
+                進行中に戻す
+              </button>
+            )}
           </div>
         </section>
       </main>
@@ -719,12 +1024,18 @@ export function App() {
 
   if (viewMode === "new-record" || viewMode === "edit-record") {
     const isEditing = viewMode === "edit-record";
+    const canSaveDraft = selectedRecord === null || selectedRecord.status === "draft";
+    const saveLabel = canSaveDraft ? "種目を完了" : "保存";
 
     return (
       <main className="app-shell">
         <section
           className="record-form-app"
           aria-label={isEditing ? "記録編集フォーム" : "記録追加フォーム"}
+          onPointerDownCapture={() => setSaveNotice("")}
+          onKeyDownCapture={() => setSaveNotice("")}
+          onWheelCapture={() => setSaveNotice("")}
+          onTouchMoveCapture={() => setSaveNotice("")}
         >
           <header className="form-header">
             <button
@@ -738,19 +1049,65 @@ export function App() {
               <p className="screen-label">Workout Tracker</p>
               <h1>{isEditing ? "記録を編集" : "新しい記録"}</h1>
             </div>
-            <button
-              className="top-save-button button-primary"
-              type="button"
-              disabled={isSaving}
-              onClick={() => void saveRecord()}
+            <div
+              className="calendar-menu"
+              onBlur={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node | null))
+                  setFormMenuOpen(false);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  setFormMenuOpen(false);
+                  event.currentTarget
+                    .querySelector<HTMLButtonElement>(".form-menu-button")
+                    ?.focus();
+                }
+              }}
             >
-              保存
-            </button>
+              <button
+                className="form-menu-button button-icon"
+                type="button"
+                disabled={isSaving}
+                aria-label="記録メニュー"
+                aria-expanded={formMenuOpen}
+                aria-controls="record-form-menu"
+                onClick={() => setFormMenuOpen((open) => !open)}
+              >
+                ⋮
+              </button>
+              {formMenuOpen && (
+                <div className="calendar-menu-items" id="record-form-menu">
+                  {canSaveDraft && (
+                    <button
+                      type="button"
+                      disabled={isSaving}
+                      onClick={() => {
+                        setFormMenuOpen(false);
+                        void saveRecord(true);
+                      }}
+                    >
+                      一時保存
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    disabled={isSaving}
+                    onClick={() => {
+                      setFormMenuOpen(false);
+                      void saveRecord();
+                    }}
+                  >
+                    {saveLabel}
+                  </button>
+                </div>
+              )}
+            </div>
           </header>
 
           <form
             ref={formElement}
             className="record-form"
+            inert={isSaving}
             onSubmit={(event) => event.preventDefault()}
           >
             <section className="form-section" aria-labelledby="basic-fields">
@@ -769,30 +1126,166 @@ export function App() {
                 />
                 <FieldError message={validationErrors.date} />
               </label>
-              <label className="field">
-                <span>
-                  種目名 <RequiredMark />
-                </span>
-                <input
-                  aria-label="種目名"
-                  list="exercise-options"
-                  placeholder="ベンチプレス"
-                  value={form.exerciseName}
-                  aria-invalid={validationErrors.exerciseName !== undefined}
-                  className={
-                    validationErrors.exerciseName !== undefined ? "invalid-input" : ""
+              <div
+                className="exercise-combobox"
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") setSuggestionsOpen(false);
+                }}
+                onBlur={(event) => {
+                  if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                    setSuggestionsOpen(false);
+                    if (
+                      exerciseNameEdited.current &&
+                      !form.exerciseId &&
+                      !exerciseLoadError &&
+                      !exercises.some(
+                        (item) =>
+                          !item.isHidden &&
+                          normalizeExerciseSearch(item.name) ===
+                            normalizeExerciseSearch(form.exerciseName),
+                      )
+                    ) {
+                      setForm((current) => ({
+                        ...current,
+                        exerciseName: "",
+                        exerciseId: undefined,
+                      }));
+                    }
+                    exerciseNameEdited.current = false;
                   }
-                  onChange={(event) =>
-                    updateFormField("exerciseName", event.target.value)
-                  }
-                />
-                <FieldError message={validationErrors.exerciseName} />
-              </label>
-              <datalist id="exercise-options">
-                {exerciseOptions.map((exercise) => (
-                  <option value={exercise} key={exercise} />
-                ))}
-              </datalist>
+                }}
+              >
+                <label className="field">
+                  <span>
+                    種目名 <RequiredMark />
+                  </span>
+                  <div className="exercise-combo-control">
+                    <input
+                      aria-label="種目名"
+                      role="combobox"
+                      aria-autocomplete="list"
+                      aria-expanded={suggestionsOpen}
+                      aria-controls={suggestionsOpen ? "exercise-listbox" : undefined}
+                      aria-activedescendant={
+                        suggestionsOpen &&
+                        activeExerciseIndex >= 0 &&
+                        exerciseMatches[activeExerciseIndex]
+                          ? `exercise-option-${activeExerciseIndex}`
+                          : undefined
+                      }
+                      autoComplete="off"
+                      value={form.exerciseName}
+                      aria-invalid={validationErrors.exerciseName !== undefined}
+                      className={
+                        validationErrors.exerciseName !== undefined ? "invalid-input" : ""
+                      }
+                      onFocus={() => {
+                        setSuggestionsOpen(true);
+                        setShowAllSuggestions(false);
+                        setActiveExerciseIndex(-1);
+                        void refreshExercises();
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Escape") setSuggestionsOpen(false);
+                        if (event.nativeEvent.isComposing) return;
+                        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                          event.preventDefault();
+                          setSuggestionsOpen(true);
+                          setActiveExerciseIndex((current) =>
+                            exerciseMatches.length === 0
+                              ? -1
+                              : event.key === "ArrowDown"
+                                ? Math.min(current + 1, exerciseMatches.length - 1)
+                                : Math.max(current - 1, 0),
+                          );
+                        }
+                        if (
+                          event.key === "Enter" &&
+                          suggestionsOpen &&
+                          exerciseMatches[activeExerciseIndex]
+                        ) {
+                          event.preventDefault();
+                          selectExercise(exerciseMatches[activeExerciseIndex]);
+                        }
+                      }}
+                      onChange={(event) => {
+                        exerciseNameEdited.current = true;
+                        setFormError("");
+                        setSuggestionsOpen(true);
+                        setShowAllSuggestions(false);
+                        setActiveExerciseIndex(-1);
+                        setForm((current) => ({
+                          ...current,
+                          exerciseName: event.target.value,
+                          exerciseId: undefined,
+                        }));
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="exercise-combo-toggle"
+                      aria-label="種目候補を開閉"
+                      title="種目候補を開閉"
+                      aria-expanded={suggestionsOpen}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        setShowAllSuggestions(true);
+                        setActiveExerciseIndex(-1);
+                        setSuggestionsOpen((open) => !open);
+                        void refreshExercises();
+                      }}
+                    >
+                      ▾
+                    </button>
+                  </div>
+                  <FieldError message={validationErrors.exerciseName} />
+                </label>
+                {suggestionsOpen && (
+                  <section className="exercise-options" aria-label="種目候補">
+                    <div
+                      className="exercise-suggestions"
+                      role="listbox"
+                      id="exercise-listbox"
+                      aria-label="保存済みの種目候補"
+                    >
+                      {exerciseMatches.map((item, index) => (
+                        <button
+                          type="button"
+                          role="option"
+                          id={`exercise-option-${index}`}
+                          aria-selected={item.id === form.exerciseId}
+                          className={activeExerciseIndex === index ? "is-active" : ""}
+                          onPointerDown={(event) => event.preventDefault()}
+                          key={item.id}
+                          title={item.name}
+                          onClick={() => selectExercise(item)}
+                        >
+                          {item.name}
+                        </button>
+                      ))}
+                      {exerciseMatches.length === 0 && (
+                        <p className="empty-state">該当する種目がありません。</p>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      className="exercise-register-button"
+                      onPointerDown={(event) => event.preventDefault()}
+                      onClick={() => {
+                        setSuggestionsOpen(false);
+                        setPickerOpen(true);
+                      }}
+                    >
+                      ＋ 種目を登録
+                    </button>
+                  </section>
+                )}
+              </div>
+              {exerciseLoadError && (
+                <p role="alert" className="field-error">
+                  {exerciseLoadError}
+                </p>
+              )}
             </section>
 
             <section className="form-section" aria-labelledby="top-set-fields">
@@ -1029,13 +1522,28 @@ export function App() {
             </section>
           </form>
           <div className="form-footer" role="group" aria-label="保存アクション">
+            {saveNotice && !hasUnsavedChanges && (
+              <p role="status" className="save-notice">
+                {saveNotice}
+              </p>
+            )}
+            {canSaveDraft && (
+              <button
+                type="button"
+                className="button-secondary"
+                disabled={isSaving}
+                onClick={() => void saveRecord(true)}
+              >
+                一時保存
+              </button>
+            )}
             <button
-              className="bottom-save-button button-primary"
+              className={`bottom-save-button ${canSaveDraft ? "button-secondary" : "button-primary"}`}
               type="button"
               disabled={isSaving}
               onClick={() => void saveRecord()}
             >
-              保存
+              {saveLabel}
             </button>
           </div>
         </section>
@@ -1058,10 +1566,61 @@ export function App() {
             <p className="screen-label">Workout Tracker</p>
             <h1>{formatMonthTitle(visibleMonth)}</h1>
           </div>
-          <div aria-hidden="true" />
+          <div
+            className="calendar-menu"
+            onBlur={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null))
+                setMenuOpen(false);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") setMenuOpen(false);
+            }}
+          >
+            <button
+              type="button"
+              className="button-icon"
+              aria-label="メニュー"
+              aria-expanded={menuOpen}
+              onClick={() => setMenuOpen((open) => !open)}
+            >
+              ☰
+            </button>
+            {menuOpen && (
+              <div
+                className="calendar-menu-items"
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") setMenuOpen(false);
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setManagementMode("manage");
+                  }}
+                >
+                  種目管理
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setManagementMode("link");
+                  }}
+                >
+                  既存記録の整理
+                </button>
+              </div>
+            )}
+          </div>
         </header>
 
         <div className="calendar-scroll">
+          {exerciseLoadError && (
+            <p role="alert" className="field-error">
+              {exerciseLoadError}
+            </p>
+          )}
           <CalendarCarousel
             key={calendarRevision}
             visibleMonth={visibleMonth}
@@ -1102,6 +1661,9 @@ export function App() {
                     <div>
                       <h3>
                         {record.exerciseName}
+                        {record.status === "draft" && (
+                          <span className="progress-label">進行中</span>
+                        )}
                         {record.isUnilateral && (
                           <span className="record-side-label">左右</span>
                         )}
